@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Saturn", "Saturn.csproj", "{332B241A-035D-E0A4-80F8-9497C9A1FDD9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Saturn.Tests", "Saturn.Tests\Saturn.Tests.csproj", "{F0E184F3-8C1E-3B89-8976-B37818C2150B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{332B241A-035D-E0A4-80F8-9497C9A1FDD9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{332B241A-035D-E0A4-80F8-9497C9A1FDD9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{332B241A-035D-E0A4-80F8-9497C9A1FDD9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{332B241A-035D-E0A4-80F8-9497C9A1FDD9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F0E184F3-8C1E-3B89-8976-B37818C2150B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F0E184F3-8C1E-3B89-8976-B37818C2150B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F0E184F3-8C1E-3B89-8976-B37818C2150B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F0E184F3-8C1E-3B89-8976-B37818C2150B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1B58DD2A-5923-42E9-ABA8-CBC2EB1D65D3}
+	EndGlobalSection
+EndGlobal

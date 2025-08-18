@@ -1,0 +1,47 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    
+    <!-- NuGet Package Configuration -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>saturn</ToolCommandName>
+    <PackageOutputPath>./nupkg</PackageOutputPath>
+    
+    <!-- Package Metadata -->
+    <PackageId>SaturnAgent</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>xyOz-dev</Authors>
+    <Description>CLI-based coding assistant with multi-agent orchestration capabilities powered by OpenRouter</Description>
+    <PackageProjectUrl>https://github.com/xyOz-dev/Saturn</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/xyOz-dev/Saturn</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>cli;ai;assistant;openrouter;agent;coding;llm</PackageTags>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    
+    <!-- Build Configuration -->
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.8" />
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="8.0.0" />
+    <PackageReference Include="Terminal.Gui" Version="1.19.0" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.11.57" />
+    <PackageReference Include="ReverseMarkdown" Version="4.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- Exclude test files from main project compilation -->
+  <ItemGroup>
+    <Compile Remove="Saturn.Tests\**" />
+    <EmbeddedResource Remove="Saturn.Tests\**" />
+    <None Remove="Saturn.Tests\**" />
+  </ItemGroup>
+
+</Project>
