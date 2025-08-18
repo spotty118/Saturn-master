@@ -58,11 +58,26 @@ namespace Saturn.UI
             
             if (applyMarkdown && markdownRenderer != null)
             {
-                finalContent = markdownRenderer.RenderToTerminal(content);
+                var formattedText = markdownRenderer.RenderToFormattedText(content);
+                AppendFormattedText(formattedText);
+            }
+            else
+            {
+                chatView.Text += finalContent;
             }
 
-            chatView.Text += finalContent;
             ScrollChatToBottom();
+        }
+
+        private void AppendFormattedText(FormattedText formattedText)
+        {
+            if (chatView == null) return;
+
+            foreach (var segment in formattedText.GetSegments())
+            {
+                Application.Driver.SetAttribute(segment.attribute);
+                chatView.AddRune(chatView.CursorPosition.X, chatView.CursorPosition.Y, (Rune)segment.text[0]);
+            }
         }
 
         public void ClearChat(Agent agent)

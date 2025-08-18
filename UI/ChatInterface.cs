@@ -23,6 +23,7 @@ namespace Saturn.UI
         private TextView inputField = null!;
         private Button sendButton = null!;
         private Toplevel app = null!;
+        private TabView statusTabView = null!;
         private FrameView toolCallsPanel = null!;
         private FrameView agentStatusPanel = null!;
         private TextView toolCallsView = null!;
@@ -150,8 +151,22 @@ namespace Saturn.UI
             app = CreateMainWindow();
             var mainContainer = CreateChatContainer();
             var inputContainer = CreateInputContainer();
+            
+            // Create the TabView
+            statusTabView = new TabView
+            {
+                X = Pos.Percent(75),
+                Y = 1,
+                Width = Dim.Fill(),
+                Height = Dim.Fill(3),
+                ColorScheme = Colors.Base
+            };
+            
             toolCallsPanel = CreateToolCallsPanel();
             agentStatusPanel = CreateAgentStatusPanel();
+            
+            statusTabView.AddTab(new TabView.Tab("Tool Calls", toolCallsPanel), false);
+            statusTabView.AddTab(new TabView.Tab("Agent Status", agentStatusPanel), false);
             
             // Now that UI components are created, initialize services that need them
             chatRenderer.Initialize(chatView, markdownRenderer);
@@ -162,7 +177,7 @@ namespace Saturn.UI
             SetupInputHandlers();
             
             inputContainer.Add(inputField, sendButton);
-            app.Add(menu, mainContainer, inputContainer, toolCallsPanel, agentStatusPanel);
+            app.Add(menu, mainContainer, inputContainer, statusTabView);
             
             SetInitialFocus();
         }
@@ -175,23 +190,23 @@ namespace Saturn.UI
 
         private void SetupTheme()
         {
-            Colors.Base.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-            Colors.Base.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-            Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-            Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-            Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-            Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.DarkGray, Color.Black);
-            Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-            Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-            Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.Black);
-            Colors.Error.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-            Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
-            Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
+            Colors.Base.Normal = Application.Driver.MakeAttribute(Color.White, Color.Blue);
+            Colors.Base.Focus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Blue);
+            Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.White, Color.Blue);
+            Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Blue);
+            Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.Gray, Color.Blue);
+            Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+            Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+            Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Gray);
+            Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+            Colors.Error.Normal = Application.Driver.MakeAttribute(Color.White, Color.Red);
+            Colors.Error.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+            Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Red);
+            Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White);
         }
 
         private MenuBar CreateMenu()
@@ -200,7 +215,7 @@ namespace Saturn.UI
             {
                 new MenuBarItem("_Options", new MenuItem[]
                 {
-                    new MenuItem("_Load Chat...", "", async () => await dialogManager.ShowLoadChatDialogAsync()),
+                    new MenuItem("_Load Chat...", "", async () => await dialogManager.ShowLoadChatDialogAsync(), shortcut: Key.CtrlMask | Key.L),
                     new MenuItem("_Clear Chat", "", () =>
                     {
                         if (chatView != null)
@@ -232,7 +247,7 @@ namespace Saturn.UI
                             inputField.SetFocus();
                             Application.Refresh();
                         }
-                    }),
+                    }, shortcut: Key.CtrlMask | Key.C),
                     null!,
                     new MenuItem("_Quit", "", () =>
                     {
@@ -241,7 +256,7 @@ namespace Saturn.UI
                 }),
                 new MenuBarItem("_Agent", new MenuItem?[]
                 {
-                    new MenuItem("_Modes...", "", async () => await dialogManager.ShowModeSelectionDialogAsync()),
+                    new MenuItem("_Modes...", "", async () => await dialogManager.ShowModeSelectionDialogAsync(), shortcut: Key.CtrlMask | Key.M),
                     null,
                     new MenuItem("_Select Model...", "", async () => await dialogManager.ShowModelSelectionDialogAsync()),
                     new MenuItem("_Temperature...", "", () => dialogManager.ShowTemperatureDialog()),
@@ -260,7 +275,82 @@ namespace Saturn.UI
                     new MenuItem("_Edit System Prompt...", "", () => dialogManager.ShowSystemPromptDialog()),
                     new MenuItem("_View Configuration...", "", () => dialogManager.ShowConfigurationDialog())
                 }),
+                new MenuBarItem("_Themes", new MenuItem?[]
+                {
+                    new MenuItem("_Default", "", () => SetTheme("Default")),
+                    new MenuItem("_Dark", "", () => SetTheme("Dark")),
+                    new MenuItem("_Light", "", () => SetTheme("Light"))
+                }),
+                new MenuBarItem("_Tools", GetToolMenuItems())
             });
+        }
+
+        private MenuItem[] GetToolMenuItems()
+        {
+            var menuItems = new List<MenuItem>();
+            var tools = toolRegistry.GetAll();
+
+            foreach (var tool in tools)
+            {
+                menuItems.Add(new MenuItem(tool.Name, "", () => OnToolClicked(tool)));
+            }
+
+            return menuItems.ToArray();
+        }
+
+        private void OnToolClicked(ITool tool)
+        {
+            // For now, just show a message box with the tool name
+            MessageBox.Query("Tool Clicked", $"You clicked the {tool.Name} tool.", "OK");
+        }
+
+        private void SetTheme(string themeName)
+        {
+            switch (themeName)
+            {
+                case "Dark":
+                    Colors.Base.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
+                    Colors.Base.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
+                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
+                    Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
+                    Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
+                    Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.DarkGray, Color.Black);
+                    Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
+                    Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
+                    Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.Black);
+                    Colors.Error.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
+                    Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
+                    break;
+                case "Light":
+                    Colors.Base.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Base.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.DarkGray, Color.White);
+                    Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.White);
+                    Colors.Error.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Red);
+                    Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.BrightRed, Color.White);
+                    Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Red);
+                    break;
+                default:
+                    SetupTheme();
+                    break;
+            }
+            Application.Refresh();
         }
 
         private Toplevel CreateMainWindow()
@@ -313,7 +403,7 @@ namespace Saturn.UI
 
         private FrameView CreateInputContainer()
         {
-            var inputContainer = new FrameView("Input (Ctrl+Enter to send)")
+            var inputContainer = new FrameView("Input (Enter to send)")
             {
                 X = 0,
                 Y = Pos.AnchorEnd(3),
@@ -345,12 +435,10 @@ namespace Saturn.UI
 
         private FrameView CreateToolCallsPanel()
         {
-            var panel = new FrameView("Tool Calls")
+            var panel = new FrameView()
             {
-                X = Pos.Percent(75),
-                Y = 1,
                 Width = Dim.Fill(),
-                Height = Dim.Percent(50) - 2,
+                Height = Dim.Fill(),
                 ColorScheme = Colors.Base
             };
 
@@ -372,10 +460,8 @@ namespace Saturn.UI
 
         private FrameView CreateAgentStatusPanel()
         {
-            var panel = new FrameView("Agent Status")
+            var panel = new FrameView()
             {
-                X = Pos.Percent(75),
-                Y = Pos.Percent(50) - 1,
                 Width = Dim.Fill(),
                 Height = Dim.Fill(),
                 ColorScheme = Colors.Base
@@ -544,7 +630,7 @@ namespace Saturn.UI
         {
             inputField.KeyDown += (e) =>
             {
-                if (e.KeyEvent.Key == (Key.CtrlMask | Key.Enter))
+                if (e.KeyEvent.Key == Key.Enter)
                 {
                     sendButton.OnClicked();
                     e.Handled = true;
@@ -614,7 +700,7 @@ namespace Saturn.UI
                     }
                 }
                 
-                chatView.Text += $"You: {message}\n";
+                chatRenderer.AppendToChat($"You: {message}\n");
                 inputField.Text = "";
                 
                 sendButton.Text = " Stop";
@@ -625,7 +711,7 @@ namespace Saturn.UI
                 Application.Refresh();
                 chatRenderer.ScrollChatToBottom();
 
-                chatView.Text += "\nAssistant: ";
+                chatRenderer.AppendToChat("\nAssistant: ");
                 chatRenderer.ScrollChatToBottom();
                 var startPosition = chatView.Text.Length;
                 var responseBuilder = new StringBuilder();
@@ -646,8 +732,8 @@ namespace Saturn.UI
                                         Application.MainLoop.Invoke(() =>
                                         {
                                             var currentText = chatView.Text.Substring(0, startPosition);
-                                            var renderedResponse = markdownRenderer.RenderToTerminal(responseBuilder.ToString());
-                                            chatView.Text = currentText + renderedResponse;
+                                            chatRenderer.AppendToChat(currentText, applyMarkdown: false);
+                                            chatRenderer.AppendToChat(responseBuilder.ToString(), applyMarkdown: true);
                                             chatRenderer.ScrollChatToBottom();
                                             Application.Refresh();
                                         });
@@ -657,13 +743,12 @@ namespace Saturn.UI
 
                             Application.MainLoop.Invoke(() =>
                             {
-                                var currentText = chatView.Text;
                                 var lastResponse = responseBuilder.ToString().TrimEnd();
                                 
                                 if (!string.IsNullOrEmpty(lastResponse))
                                 {
-                                    bool endsWithNewline = currentText.EndsWith("\n");
-                                    bool endsWithDoubleNewline = currentText.EndsWith("\n\n");
+                                    bool endsWithNewline = chatView.Text.EndsWith("\n");
+                                    bool endsWithDoubleNewline = chatView.Text.EndsWith("\n\n");
                                     
                                     char lastChar = lastResponse.Length > 0 ? lastResponse[lastResponse.Length - 1] : '\0';
                                     bool endsWithPunctuation = ".!?:;)]}\"'`".Contains(lastChar);
@@ -672,26 +757,26 @@ namespace Saturn.UI
                                     {
                                         if (endsWithPunctuation)
                                         {
-                                            chatView.Text += "\n\n";
+                                            chatRenderer.AppendToChat("\n\n");
                                         }
                                         else
                                         {
-                                            chatView.Text += " ";
+                                            chatRenderer.AppendToChat(" ");
                                         }
                                     }
                                     else if (!endsWithDoubleNewline)
                                     {
-                                        chatView.Text += "\n";
+                                        chatRenderer.AppendToChat("\n");
                                     }
                                 }
                                 else
                                 {
-                                    if (!currentText.EndsWith("\n\n"))
+                                    if (!chatView.Text.EndsWith("\n\n"))
                                     {
-                                        if (currentText.EndsWith("\n"))
-                                            chatView.Text += "\n";
+                                        if (chatView.Text.EndsWith("\n"))
+                                            chatRenderer.AppendToChat("\n");
                                         else
-                                            chatView.Text += "\n\n";
+                                            chatRenderer.AppendToChat("\n\n");
                                     }
                                 }
                                 
@@ -706,9 +791,7 @@ namespace Saturn.UI
 
                             Application.MainLoop.Invoke(() =>
                             {
-                                var currentText = chatView.Text;
-                                
-                                chatView.Text += renderedResponse;
+                                chatRenderer.AppendToChat(renderedResponse, applyMarkdown: true);
                                 
                                 var updatedText = chatView.Text;
                                 bool endsWithNewline = updatedText.EndsWith("\n\n");
@@ -722,16 +805,16 @@ namespace Saturn.UI
                                 {
                                     if (endsWithPunctuation)
                                     {
-                                        chatView.Text += "\n\n";
+                                        chatRenderer.AppendToChat("\n\n");
                                     }
                                     else
                                     {
-                                        chatView.Text += " ";
+                                        chatRenderer.AppendToChat(" ");
                                     }
                                 }
                                 else if (!endsWithDoubleNewline)
                                 {
-                                    chatView.Text += "\n";
+                                    chatRenderer.AppendToChat("\n");
                                 }
                                 
                                 chatRenderer.ScrollChatToBottom();
@@ -742,7 +825,7 @@ namespace Saturn.UI
                     {
                         Application.MainLoop.Invoke(() =>
                         {
-                            chatView.Text += " [Cancelled]\n\n";
+                            chatRenderer.AppendToChat(" [Cancelled]\n\n");
                             chatRenderer.ScrollChatToBottom();
                         });
                     }
@@ -750,7 +833,7 @@ namespace Saturn.UI
                     {
                         Application.MainLoop.Invoke(() =>
                         {
-                            chatView.Text += $"[Error: {ex.Message}]\n\n";
+                            chatRenderer.AppendToChat($"[Error: {ex.Message}]\n\n");
                             chatRenderer.ScrollChatToBottom();
                         });
                     }
@@ -758,7 +841,7 @@ namespace Saturn.UI
             }
             catch (Exception ex)
             {
-                chatView.Text += $"\n[Error processing message: {ex.Message}]\n\n";
+                chatRenderer.AppendToChat($"\n[Error processing message: {ex.Message}]\n\n");
                 chatRenderer.ScrollChatToBottom();
             }
             finally

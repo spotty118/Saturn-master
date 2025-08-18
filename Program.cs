@@ -80,7 +80,12 @@ namespace Saturn
             var apiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                throw new InvalidOperationException("OPENROUTER_API_KEY environment variable is not set. Please set it before running the application.");
+                Console.WriteLine("OpenRouter API Key not found. Please enter your API key:");
+                apiKey = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(apiKey))
+                {
+                    throw new InvalidOperationException("OPENROUTER_API_KEY environment variable is not set. Please set it before running the application.");
+                }
             }
             
             OpenRouterOptions options = new OpenRouterOptions()
