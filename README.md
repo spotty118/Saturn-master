@@ -112,6 +112,42 @@ saturn --web --port 8080
 - **🎯 Smart Scaling**: Automatic concurrency adjustment based on system capabilities
 - **💻 Multi-Core Support**: Optimized for dual-core to 16+ core systems
 
+### 3️⃣ **Monitor Performance** *(New in v1.0-beta)*
+
+```bash
+# Check system and multi-threading metrics
+saturn system_metrics
+
+# Monitor real-time performance
+saturn system_metrics --includeThreadPool=true --includeProcess=true
+```
+
+**📊 Performance Insights:**
+- **CPU Utilization**: Real-time monitoring of all cores
+- **Thread Pool Status**: Active threads and utilization percentages
+- **Memory Usage**: Current and peak memory consumption
+- **Optimization Recommendations**: Automatic suggestions for better performance
+
+---
+
+## 🔒 Security Features
+
+### **Enterprise-Grade Protection**
+- **🔐 Encrypted Storage**: API keys encrypted at rest using cross-platform PBKDF2
+- **🛡️ Memory Protection**: Sensitive data cleared from memory after use
+- **⚡ Input Validation**: Comprehensive validation preventing malformed data
+- **🚫 XSS Prevention**: Multi-layered cross-site scripting protection
+- **🔒 Command Security**: Allowlist-based command execution (40+ safe commands)
+- **🛡️ CSP Hardening**: Strict Content Security Policy implementation
+
+### **Threat Mitigation**
+- ✅ **Command Injection**: Prevented via allowlist validation and path traversal protection
+- ✅ **SQL Injection**: Parameterized queries throughout
+- ✅ **XSS Attacks**: Comprehensive sanitization and encoding
+- ✅ **API Key Exposure**: Zero exposure with encrypted storage and masked display
+- ✅ **Memory Leaks**: Proper disposal patterns implemented
+- ✅ **Process Leaks**: Enhanced cleanup and resource management
+
 ---
 
 ## ⚡ Performance Metrics
@@ -124,6 +160,89 @@ saturn --web --port 8080
 - 🧵 **Multi-Core Scaling**: Linear performance improvement with CPU count
 - 📊 **Real-Time Monitoring**: SystemMetricsTool for performance analysis
 - 🛡️ **100% Security Coverage**: All 16 critical vulnerabilities fixed
+
+---
+
+## 🔧 Configuration
+
+### **Secure Configuration Management**
+
+Saturn uses encrypted configuration storage for maximum security:
+
+```bash
+# Configuration automatically stored in encrypted format at:
+# ~/.saturn/settings.json (encrypted with PBKDF2)
+
+# API keys are automatically encrypted using machine-specific entropy
+# No manual environment variable setup required
+```
+
+### **Environment Variables** *(Legacy Support)*
+
+```bash
+# Legacy method (automatically migrated to secure storage)
+# Windows (Command Prompt)
+setx OPENROUTER_API_KEY your-api-key-here
+
+# Windows (PowerShell)
+$env:OPENROUTER_API_KEY = "your-api-key-here"
+
+# macOS/Linux
+export OPENROUTER_API_KEY="your-api-key-here"
+```
+
+### **Advanced Configuration**
+
+```bash
+# Custom configuration directory
+saturn --config-path /custom/path
+
+# Enable debug logging
+saturn --verbose
+
+# Custom web UI port
+saturn --web --port 8080
+
+# Disable auto-migration
+saturn --no-migration
+```
+
+---
+
+## 🏗️ Build Instructions
+
+### **Development Setup**
+
+```bash
+# Clone repository
+git clone https://github.com/xyOz-dev/Saturn.git
+cd Saturn
+
+# Restore dependencies
+dotnet restore
+
+# Build in Release mode
+dotnet build -c Release
+
+# Run tests
+dotnet test
+
+# Create NuGet package
+dotnet pack -c Release
+
+# Install locally
+dotnet tool install --global --add-source ./nupkg SaturnAgent
+```
+
+### **Docker Support** *(Coming Soon)*
+
+```bash
+# Build Docker image
+docker build -t saturn-agent .
+
+# Run in container
+docker run -p 8080:8080 saturn-agent
+```
 
 ---
 
@@ -145,7 +264,86 @@ saturn --web --port 8080
 
 ---
 
-## 📝 Changelog
+## � Usage Examples
+
+### **File Operations**
+
+```bash
+# Search for patterns across multiple files (now 6-8x faster!)
+saturn grep "TODO" --recursive --file-pattern "*.cs"
+
+# Search and replace across codebase
+saturn search_replace "oldFunction" "newFunction" --file-pattern "*.cs" --dry-run
+
+# List files with advanced filtering
+saturn list_files --recursive --pattern "*.json" --max-results 100
+```
+
+### **Multi-Agent Workflows**
+
+```bash
+# Create and manage multiple agents
+saturn create_agent "CodeReviewer" --task "Review code quality"
+saturn create_agent "TestWriter" --task "Write unit tests"
+
+# Monitor agent performance
+saturn get_agent_status --agent-id "CodeReviewer"
+saturn system_metrics --includeThreadPool=true
+```
+
+### **Performance Monitoring**
+
+```bash
+# Real-time system metrics
+saturn system_metrics
+
+# Detailed performance analysis
+saturn system_metrics --includeThreadPool=true --includeProcess=true --includeSystem=true
+```
+
+---
+
+## 🔧 Troubleshooting
+
+### **Common Issues**
+
+**🔑 API Key Issues**
+```bash
+# Reset API key configuration
+saturn --reset-config
+
+# Verify API key format
+saturn --validate-config
+```
+
+**⚡ Performance Issues**
+```bash
+# Check system utilization
+saturn system_metrics
+
+# Monitor thread pool status
+saturn system_metrics --includeThreadPool=true
+```
+
+**🌐 Web UI Issues**
+```bash
+# Try different port
+saturn --web --port 8081
+
+# Clear browser cache and restart
+saturn --web --force-refresh
+```
+
+### **Getting Help**
+
+- 📖 **Documentation**: Check the built-in help with `saturn --help`
+- 🐛 **Bug Reports**: [GitHub Issues](https://github.com/xyOz-dev/Saturn/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/xyOz-dev/Saturn/discussions)
+- 📧 **Support**: Create an issue with detailed logs and system info
+
+---
+
+## �📝 Changelog
 
 ### **v1.0.0-beta - Comprehensive Enhancement Release** *(Latest)*
 - 🔒 **Enterprise Security**: Cross-platform PBKDF2 encryption, command injection prevention
@@ -170,10 +368,61 @@ saturn --web --port 8080
 
 ---
 
+## 🤝 Contributing
+
+We welcome contributions! Here's how you can help:
+
+### **Development**
+1. **Fork** the repository
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
+4. **Push** to the branch (`git push origin feature/amazing-feature`)
+5. **Open** a Pull Request
+
+### **Areas for Contribution**
+- 🧵 **Performance Optimizations**: Multi-threading improvements
+- 🔒 **Security Enhancements**: Additional security measures
+- 🎨 **UI/UX Improvements**: Modern interface enhancements
+- 📖 **Documentation**: Tutorials, examples, and guides
+- 🧪 **Testing**: Unit tests and integration tests
+- 🔧 **Tools**: New agent tools and capabilities
+
+### **Code Standards**
+- Follow .NET coding conventions
+- Include comprehensive unit tests
+- Update documentation for new features
+- Ensure thread-safety for concurrent operations
+- Maintain security-first approach
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
+
+### **Third-Party Licenses**
+- **.NET 9.0**: MIT License
+- **OpenRouter**: API Terms of Service
+- **SignalR**: MIT License
+- **SQLite**: Public Domain
+
+---
+
+## 🙏 Acknowledgments
+
+- **OpenRouter Team** for excellent AI model access
+- **.NET Community** for the robust framework
+- **Contributors** who make Saturn better every day
+- **Security Researchers** who help keep Saturn secure
+
+---
+
 <div align="center">
 
 **Built with ❤️ for developers who value security, performance, and accessibility**
 
 [🌟 Star us on GitHub](https://github.com/xyOz-dev/Saturn) • [🐛 Report Issues](https://github.com/xyOz-dev/Saturn/issues) • [💬 Discussions](https://github.com/xyOz-dev/Saturn/discussions)
+
+**Saturn AI Agent Framework v1.0-beta** - *Empowering developers with intelligent automation*
 
 </div>
