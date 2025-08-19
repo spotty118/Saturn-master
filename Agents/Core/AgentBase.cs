@@ -74,7 +74,7 @@ namespace Saturn.Agents
                     Configuration.MaxTokens
                 );
                 CurrentSessionId = session.Id;
-                
+
                 if (Configuration.SystemPrompt != null)
                 {
                     var systemMessage = new Message
@@ -85,12 +85,13 @@ namespace Saturn.Agents
                     ChatHistory.Add(systemMessage);
                     await repository.SaveMessageAsync(CurrentSessionId, systemMessage);
                 }
-                
-                repository.Dispose();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Failed to initialize session: {ex.Message}");
+            }
+            finally
+            {
                 repository.Dispose();
             }
         }
@@ -111,23 +112,14 @@ namespace Saturn.Agents
                 var repository = new ChatHistoryRepository();
                 try
                 {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await repository.SaveMessageAsync(CurrentSessionId, userMessage);
-                            repository.Dispose();
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Failed to save user message: {ex.Message}");
-                            repository.Dispose();
-                        }
-                    });
+                    await repository.SaveMessageAsync(CurrentSessionId, userMessage);
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Failed to save user message: {ex.Message}");
+                }
+                finally
+                {
                     repository.Dispose();
                 }
             }

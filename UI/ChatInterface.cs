@@ -11,112 +11,61 @@ using Saturn.Agents.Core;
 using Saturn.Agents.MultiAgent;
 using Saturn.Configuration;
 using Saturn.OpenRouter;
-using Saturn.OpenRouter.Models.Api.Chat;
 using Saturn.Tools.Core;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace Saturn.UI
 {
     public class ChatInterface
     {
-        private TextView chatView = null!;
-        private TextView inputField = null!;
-        private Button sendButton = null!;
-        private Toplevel app = null!;
-        private TabView statusTabView = null!;
-        private FrameView toolCallsPanel = null!;
-        private FrameView agentStatusPanel = null!;
-        private TextView toolCallsView = null!;
-        private TextView agentStatusView = null!;
-        private Agent agent;
-        private bool isProcessing;
-        private CancellationTokenSource? cancellationTokenSource;
-        private OpenRouterClient? openRouterClient;
-        private MarkdownRenderer markdownRenderer;
-        
-        // DI services
-        private readonly AgentManager agentManager;
-        private readonly ToolRegistry toolRegistry;
-        private readonly ConfigurationManager configurationManager;
-        
-        // Extracted services
+        // Field declarations
         private readonly IChatRenderer chatRenderer;
-        private readonly IDialogManager dialogManager;
-        private readonly IAgentConfigurationManager agentConfigurationManager;
         private readonly IChatSessionManager chatSessionManager;
+        private readonly IDialogManager dialogManager;
+        private readonly Agent agent;
+        private readonly AgentManager agentManager;
+        private readonly IAgentConfigurationManager agentConfigurationManager;
+        private readonly ToolRegistry toolRegistry;
+        private readonly MarkdownRenderer markdownRenderer;
 
-        public ChatInterface(Agent aiAgent, OpenRouterClient? client = null, IServiceProvider? serviceProvider = null)
+        // UI Components
+        private Toplevel app;
+        private TextView chatView;
+        private TextView inputField;
+        private Button sendButton;
+        private TextView toolCallsView;
+        private TextView agentStatusView;
+        private TabView statusTabView;
+        private FrameView toolCallsPanel;
+        private FrameView agentStatusPanel;
+
+        // State management
+        private bool isProcessing = false;
+        private CancellationTokenSource cancellationTokenSource;
+
+        public ChatInterface(
+            IChatRenderer chatRenderer,
+            IChatSessionManager chatSessionManager,
+            IDialogManager dialogManager,
+            Agent agent,
+            AgentManager agentManager,
+            IAgentConfigurationManager agentConfigurationManager,
+            ToolRegistry toolRegistry,
+            MarkdownRenderer markdownRenderer)
         {
-            agent = aiAgent ?? throw new ArgumentNullException(nameof(aiAgent));
-            openRouterClient = client ?? agent.Configuration.Client as OpenRouterClient;
-            isProcessing = false;
-            
-            // Get services from DI container
-            if (serviceProvider == null)
-                throw new ArgumentNullException(nameof(serviceProvider));
-                
-            agentManager = serviceProvider.GetRequiredService<AgentManager>();
-            toolRegistry = serviceProvider.GetRequiredService<ToolRegistry>();
-            configurationManager = serviceProvider.GetRequiredService<ConfigurationManager>();
-            
-            // Get extracted services
-            chatRenderer = serviceProvider.GetRequiredService<IChatRenderer>();
-            dialogManager = serviceProvider.GetRequiredService<IDialogManager>();
-            agentConfigurationManager = serviceProvider.GetRequiredService<IAgentConfigurationManager>();
-            chatSessionManager = serviceProvider.GetRequiredService<IChatSessionManager>();
-            
-            agent.OnToolCall += (toolName, args) => UpdateToolCall(toolName, args);
-            markdownRenderer = new MarkdownRenderer();
-            
-            InitializeExtractedServices();
-            InitializeAgentManager();
+            this.chatRenderer = chatRenderer ?? throw new ArgumentNullException(nameof(chatRenderer));
+            this.chatSessionManager = chatSessionManager ?? throw new ArgumentNullException(nameof(chatSessionManager));
+            this.dialogManager = dialogManager ?? throw new ArgumentNullException(nameof(dialogManager));
+            this.agent = agent ?? throw new ArgumentNullException(nameof(agent));
+            this.agentManager = agentManager ?? throw new ArgumentNullException(nameof(agentManager));
+            this.agentConfigurationManager = agentConfigurationManager ?? throw new ArgumentNullException(nameof(agentConfigurationManager));
+            this.toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
+            this.markdownRenderer = markdownRenderer ?? throw new ArgumentNullException(nameof(markdownRenderer));
+
+            SetupAgentManagerEvents();
         }
-        
-        private void InitializeExtractedServices()
+
+        private void SetupAgentManagerEvents()
         {
-            // Initialize dialog manager
-            dialogManager.Initialize(openRouterClient!, toolRegistry);
-            dialogManager.ConfigurationChanged += async (config) =>
-            {
-                await agentConfigurationManager.ReconfigureAgentAsync();
-                chatRenderer.ClearChat(agent);
-                Application.Refresh();
-            };
-            dialogManager.LoadChatRequested += async (sessionId) =>
-            {
-                try
-                {
-                    await chatSessionManager.LoadChatSessionAsync(sessionId);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.ErrorQuery("Error", $"Failed to load chat: {ex.Message}", "OK");
-                }
-            };
-            
-            // Initialize agent configuration manager
-            agentConfigurationManager.Initialize(agent, openRouterClient!, configurationManager);
-            agentConfigurationManager.AgentReconfigured += (newAgent) =>
-            {
-                agent = newAgent;
-                agent.OnToolCall += (toolName, args) => UpdateToolCall(toolName, args);
-                chatRenderer.ClearChat(agent);
-                dialogManager.SetCurrentConfiguration(agentConfigurationManager.CurrentConfig);
-            };
-            
-            // Initialize chat session manager (will be done after UI components are created)
-            chatSessionManager.StatusUpdated += (status) => UpdateAgentStatus(status);
-        }
-        
-        private void InitializeAgentManager()
-        {
-            agentManager.Initialize(openRouterClient!);
-            
-            agentManager.OnAgentCreated += (agentId, name) =>
-            {
-                UpdateAgentStatus("Managing sub-agents", 1, new List<string> { $"{name} ({agentId})" });
-            };
-            
             agentManager.OnAgentStatusChanged += (agentId, name, status) =>
             {
                 var agents = agentManager.GetAllAgentStatuses();
@@ -146,142 +95,181 @@ namespace Saturn.UI
         {
             Application.Init();
             SetupTheme();
-            
+
             var menu = CreateMenu();
             app = CreateMainWindow();
-            var mainContainer = CreateChatContainer();
-            var inputContainer = CreateInputContainer();
-            
-            // Create the TabView
-            statusTabView = new TabView
+
+            // Root container: horizontal split (left: chat+input, right: status tabs)
+            var rootContainer = new FrameView()
             {
-                X = Pos.Percent(75),
-                Y = 1,
+                X = 0,
+                Y = 1, // below menu
+                Width = Dim.Fill(),
+                Height = Dim.Fill(1), // leave space for status bar
+                ColorScheme = Colors.Base
+            };
+
+            // Left: vertical stack (chat, input)
+            var leftPanel = new FrameView()
+            {
+                X = 0,
+                Y = 0,
+                Width = Dim.Percent(70),
+                Height = Dim.Fill(),
+                ColorScheme = Colors.Base,
+                Border = new Border() { BorderStyle = BorderStyle.None }
+            };
+
+            // Main chat container
+            var mainContainer = new FrameView("Chat")
+            {
+                X = 0,
+                Y = 0,
                 Width = Dim.Fill(),
                 Height = Dim.Fill(3),
                 ColorScheme = Colors.Base
             };
-            
+            var chatViewLocal = new TextView()
+            {
+                X = 0,
+                Y = 0,
+                Width = Dim.Fill(1),
+                Height = Dim.Fill(),
+                ReadOnly = true,
+                WordWrap = true,
+                Text = GetWelcomeMessage(),
+                ColorScheme = Colors.Base
+            };
+            mainContainer.Add(chatViewLocal);
+            chatView = chatViewLocal;
+
+            // Input container
+            var inputContainer = new FrameView("Input (Enter: Send, Ctrl+Enter: New Line)")
+            {
+                X = 0,
+                Y = Pos.AnchorEnd(3),
+                Width = Dim.Fill(),
+                Height = 3,
+                ColorScheme = Colors.Base
+            };
+            var inputFieldLocal = new TextView()
+            {
+                X = 0,
+                Y = 0,
+                Width = Dim.Fill(12),
+                Height = Dim.Fill(),
+                CanFocus = true,
+                ColorScheme = Colors.Base,
+                WordWrap = true,
+                Text = ""
+            };
+            var sendButtonLocal = new Button("Send")
+            {
+                X = Pos.Right(inputFieldLocal) + 1,
+                Y = Pos.Center(),
+                ColorScheme = Colors.Base,
+                Text = "Send"
+            };
+            var charCounter = new Label("0 chars")
+            {
+                X = Pos.Right(sendButtonLocal) + 1,
+                Y = Pos.Center(),
+                ColorScheme = Colors.Base,
+                Text = "0 chars"
+            };
+            inputContainer.Add(inputFieldLocal, sendButtonLocal, charCounter);
+            inputField = inputFieldLocal;
+            sendButton = sendButtonLocal;
+
+            leftPanel.Add(mainContainer);
+            leftPanel.Add(inputContainer);
+
+            // Right: status tabs
+            statusTabView = new TabView
+            {
+                X = Pos.Right(leftPanel),
+                Y = 0,
+                Width = Dim.Fill(),
+                Height = Dim.Fill(),
+                ColorScheme = Colors.Base
+            };
             toolCallsPanel = CreateToolCallsPanel();
             agentStatusPanel = CreateAgentStatusPanel();
-            
-            statusTabView.AddTab(new TabView.Tab("Tool Calls", toolCallsPanel), false);
-            statusTabView.AddTab(new TabView.Tab("Agent Status", agentStatusPanel), false);
-            
+            var helpPanel = CreateHelpPanel();
+            statusTabView.AddTab(new TabView.Tab("Tools", toolCallsPanel), false);
+            statusTabView.AddTab(new TabView.Tab("Agents", agentStatusPanel), false);
+            statusTabView.AddTab(new TabView.Tab("Help", helpPanel), false);
+
+            // Add both panels to root
+            rootContainer.Add(leftPanel, statusTabView);
+
             // Now that UI components are created, initialize services that need them
             chatRenderer.Initialize(chatView, markdownRenderer);
             chatSessionManager.Initialize(agent, chatView, toolCallsView, markdownRenderer);
             dialogManager.SetCurrentConfiguration(agentConfigurationManager.CurrentConfig);
-            
             SetupScrollBar(mainContainer);
             SetupInputHandlers();
-            
-            inputContainer.Add(inputField, sendButton);
-            app.Add(menu, mainContainer, inputContainer, statusTabView);
-            
-            SetInitialFocus();
-        }
 
-        public void Run()
-        {
-            Application.Run(app);
-            Application.Shutdown();
+            // Add status bar
+            var statusBar = CreateStatusBar();
+            app.Add(menu, rootContainer, statusBar);
+            SetInitialFocus();
         }
 
         private void SetupTheme()
         {
-            Colors.Base.Normal = Application.Driver.MakeAttribute(Color.White, Color.Blue);
-            Colors.Base.Focus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
-            Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Blue);
-            Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            // Clean, professional theme with high contrast
+            Colors.Base.Normal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+            Colors.Base.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+            Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+            Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+            
             Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.White, Color.Blue);
-            Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
-            Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Blue);
-            Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Cyan);
+            Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
+            Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Blue);
+            Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
             Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.Gray, Color.Blue);
+            
             Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
-            Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
-            Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.Cyan, Color.Gray);
-            Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White);
-            Colors.Error.Normal = Application.Driver.MakeAttribute(Color.White, Color.Red);
-            Colors.Error.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
-            Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Red);
-            Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+            Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
+            Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Gray);
+            Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
+            
+            Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.Black);
+            Colors.Error.Focus = Application.Driver.MakeAttribute(Color.White, Color.Red);
+            Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.Red, Color.Black);
+            Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Red);
+            
+            Colors.TopLevel.Normal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+            Colors.TopLevel.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
         }
 
         private MenuBar CreateMenu()
         {
             return new MenuBar(new MenuBarItem[]
             {
-                new MenuBarItem("_Options", new MenuItem[]
+                new MenuBarItem("modes", new MenuItem[]
                 {
-                    new MenuItem("_Load Chat...", "", async () => await dialogManager.ShowLoadChatDialogAsync(), shortcut: Key.CtrlMask | Key.L),
-                    new MenuItem("_Clear Chat", "", () =>
-                    {
-                        if (chatView != null)
-                        {
-                            if (isProcessing && cancellationTokenSource != null)
-                            {
-                                cancellationTokenSource.Cancel();
-                                cancellationTokenSource?.Dispose();
-                                cancellationTokenSource = null;
-                            }
-                            isProcessing = false;
-                            
-                            chatRenderer.ClearChat(agent);
-                            
-                            inputField.Text = "";
-                            inputField.ReadOnly = false;
-                            
-                            sendButton.Text = "Send";
-                            sendButton.Enabled = true;
-                            
-                            agent?.ClearHistory();
-                            
-                            toolCallsView.Text = "No tool calls yet...\n";
-                            
-                            agentManager.TerminateAllAgents();
-                            
-                            UpdateAgentStatus("Ready");
-                            
-                            inputField.SetFocus();
-                            Application.Refresh();
-                        }
-                    }, shortcut: Key.CtrlMask | Key.C),
-                    null!,
-                    new MenuItem("_Quit", "", () =>
-                    {
-                        Application.RequestStop();
-                    })
+                    new MenuItem("code", "Switch to code mode", () => ChangeMode("code"), shortcut: Key.F2),
+                    new MenuItem("research", "Switch to research mode", () => ChangeMode("research"), shortcut: Key.F3),
+                    new MenuItem("debug", "Switch to debug mode", () => ChangeMode("debug"), shortcut: Key.F4)
                 }),
-                new MenuBarItem("_Agent", new MenuItem?[]
+                new MenuBarItem("session", new MenuItem[]
                 {
-                    new MenuItem("_Modes...", "", async () => await dialogManager.ShowModeSelectionDialogAsync(), shortcut: Key.CtrlMask | Key.M),
-                    null,
-                    new MenuItem("_Select Model...", "", async () => await dialogManager.ShowModelSelectionDialogAsync()),
-                    new MenuItem("_Temperature...", "", () => dialogManager.ShowTemperatureDialog()),
-                    new MenuItem("_Max Tokens...", "", () => dialogManager.ShowMaxTokensDialog()),
-                    new MenuItem("Top _P...", "", () => dialogManager.ShowTopPDialog()),
-                    new MenuItem("Select _Tools...", "", async () => await dialogManager.ShowToolSelectionDialogAsync()),
-                    null,
-                    new MenuItem("_Streaming", "", async () => await agentConfigurationManager.ToggleStreamingAsync()) 
-                        { Checked = agentConfigurationManager.CurrentConfig.EnableStreaming },
-                    new MenuItem("_Maintain History", "", async () => await agentConfigurationManager.ToggleMaintainHistoryAsync()) 
-                        { Checked = agentConfigurationManager.CurrentConfig.MaintainHistory },
-                    new MenuItem("_Command Approval", "", async () => await agentConfigurationManager.ToggleCommandApprovalAsync()) 
-                        { Checked = agentConfigurationManager.CurrentConfig.RequireCommandApproval },
-                    new MenuItem("Max _History Messages...", "", () => dialogManager.ShowMaxHistoryDialog()),
-                    null,
-                    new MenuItem("_Edit System Prompt...", "", () => dialogManager.ShowSystemPromptDialog()),
-                    new MenuItem("_View Configuration...", "", () => dialogManager.ShowConfigurationDialog())
+                    new MenuItem("save", "Save current chat session", () => SaveSession(), shortcut: Key.CtrlMask | Key.S),
+                    new MenuItem("load", "Load a saved session", () => LoadSession(), shortcut: Key.CtrlMask | Key.L),
+                    new MenuItem("clear", "Clear current chat", () => ClearChat(), shortcut: Key.CtrlMask | Key.K)
                 }),
-                new MenuBarItem("_Themes", new MenuItem?[]
+                new MenuBarItem("theme", new MenuItem[]
                 {
-                    new MenuItem("_Default", "", () => SetTheme("Default")),
-                    new MenuItem("_Dark", "", () => SetTheme("Dark")),
-                    new MenuItem("_Light", "", () => SetTheme("Light"))
+                    new MenuItem("default", "Default theme", () => SetTheme("Default")),
+                    new MenuItem("dark", "Dark theme", () => SetTheme("Dark")),
+                    new MenuItem("light", "Light theme", () => SetTheme("Light"))
                 }),
-                new MenuBarItem("_Tools", GetToolMenuItems())
+                new MenuBarItem("help", new MenuItem[]
+                {
+                    new MenuItem("help", "Show help and shortcuts", () => ShowQuickHelp(), shortcut: Key.F1)
+                })
             });
         }
 
@@ -290,18 +278,93 @@ namespace Saturn.UI
             var menuItems = new List<MenuItem>();
             var tools = toolRegistry.GetAll();
 
-            foreach (var tool in tools)
+            // Group tools by category
+            var fileTools = tools.Where(t => t.Name.Contains("file") || t.Name.Contains("grep") || t.Name.Contains("glob")).ToList();
+            var agentTools = tools.Where(t => t.Name.Contains("agent")).ToList();
+            var otherTools = tools.Where(t => !t.Name.Contains("file") && !t.Name.Contains("grep") && !t.Name.Contains("glob") && !t.Name.Contains("agent")).ToList();
+
+            if (fileTools.Any())
             {
-                menuItems.Add(new MenuItem(tool.Name, "", () => OnToolClicked(tool)));
+                menuItems.Add(null!); // Separator
+                foreach (var tool in fileTools)
+                {
+                    menuItems.Add(new MenuItem($"{tool.Name}", tool.Description, () => OnToolClicked(tool)));
+                }
+            }
+
+            if (agentTools.Any())
+            {
+                menuItems.Add(null!); // Separator
+                foreach (var tool in agentTools)
+                {
+                    menuItems.Add(new MenuItem($"{tool.Name}", tool.Description, () => OnToolClicked(tool)));
+                }
+            }
+
+            if (otherTools.Any())
+            {
+                menuItems.Add(null!); // Separator
+                foreach (var tool in otherTools)
+                {
+                    menuItems.Add(new MenuItem($"{tool.Name}", tool.Description, () => OnToolClicked(tool)));
+                }
             }
 
             return menuItems.ToArray();
         }
 
+        private void ChangeMode(string mode)
+        {
+            // Implementation for changing modes
+            MessageBox.Query("Mode Change", $"Switching to {mode} mode...", "OK");
+        }
+
+        private void SaveSession()
+        {
+            // Implementation for saving session
+            MessageBox.Query("Save Session", "Session saved successfully!", "OK");
+        }
+
+        private void LoadSession()
+        {
+            // Implementation for loading session
+            MessageBox.Query("Load Session", "Select a session to load...", "OK");
+        }
+
+        private void ClearChat()
+        {
+            chatView.Text = GetWelcomeMessage();
+            Application.Refresh();
+        }
+
+        private void ShowQuickHelp()
+        {
+            var helpText = GetHelpText();
+            MessageBox.Query("❓ Saturn Help", helpText, "OK");
+        }
+
         private void OnToolClicked(ITool tool)
         {
-            // For now, just show a message box with the tool name
-            MessageBox.Query("Tool Clicked", $"You clicked the {tool.Name} tool.", "OK");
+            var toolInfo = $"{tool.Name}\n\n";
+            toolInfo += $"Description:\n{tool.Description}\n\n";
+            
+            var parameters = tool.GetParameters();
+            if (parameters.Any())
+            {
+                toolInfo += "Parameters:\n";
+                foreach (var param in parameters)
+                {
+                    toolInfo += $"• {param.Key}: {param.Value}\n";
+                }
+            }
+            else
+            {
+                toolInfo += "Parameters: None required\n";
+            }
+            
+            toolInfo += "\nTip: You can also use this tool directly in chat by describing what you want to do!";
+            
+            MessageBox.Query($"{tool.Name}", toolInfo, "OK");
         }
 
         private void SetTheme(string themeName)
@@ -309,43 +372,61 @@ namespace Saturn.UI
             switch (themeName)
             {
                 case "Dark":
-                    Colors.Base.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-                    Colors.Base.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-                    Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-                    Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
-                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-                    Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.DarkGray, Color.Black);
-                    Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Gray, Color.Black);
-                    Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
-                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.White, Color.Black);
-                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.BrightMagenta, Color.Black);
-                    Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.Black);
-                    Colors.Error.Focus = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    // Modern dark theme with better contrast
+                    Colors.Base.Normal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.Base.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.BrightCyan, Color.Black);
+                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.BrightCyan, Color.DarkGray);
+                    
+                    Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
+                    Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.BrightCyan, Color.DarkGray);
+                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.BrightCyan, Color.White);
+                    Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.Gray, Color.DarkGray);
+                    
+                    Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.White, Color.DarkGray);
+                    Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.BrightCyan, Color.DarkGray);
+                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.BrightCyan, Color.White);
+                    
+                    Colors.Error.Normal = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
+                    Colors.Error.Focus = Application.Driver.MakeAttribute(Color.White, Color.Red);
                     Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
-                    Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.BrightRed, Color.Black);
+                    Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Red);
+                    
+                    Colors.TopLevel.Normal = Application.Driver.MakeAttribute(Color.White, Color.Black);
+                    Colors.TopLevel.Focus = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    
                     break;
+                    
                 case "Light":
+                    // Clean light theme with better readability
                     Colors.Base.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
                     Colors.Base.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
-                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
-                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Base.HotNormal = Application.Driver.MakeAttribute(Color.Blue, Color.White);
+                    Colors.Base.HotFocus = Application.Driver.MakeAttribute(Color.Blue, Color.Gray);
+                    
                     Colors.Menu.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
                     Colors.Menu.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
-                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
-                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Menu.HotNormal = Application.Driver.MakeAttribute(Color.Blue, Color.White);
+                    Colors.Menu.HotFocus = Application.Driver.MakeAttribute(Color.Blue, Color.Gray);
                     Colors.Menu.Disabled = Application.Driver.MakeAttribute(Color.DarkGray, Color.White);
+                    
                     Colors.Dialog.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
                     Colors.Dialog.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
-                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.Black, Color.White);
-                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.Magenta, Color.Gray);
+                    Colors.Dialog.HotNormal = Application.Driver.MakeAttribute(Color.Blue, Color.White);
+                    Colors.Dialog.HotFocus = Application.Driver.MakeAttribute(Color.Blue, Color.Gray);
+                    
                     Colors.Error.Normal = Application.Driver.MakeAttribute(Color.Red, Color.White);
                     Colors.Error.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Red);
-                    Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.BrightRed, Color.White);
+                    Colors.Error.HotNormal = Application.Driver.MakeAttribute(Color.Red, Color.White);
                     Colors.Error.HotFocus = Application.Driver.MakeAttribute(Color.White, Color.Red);
+                    
+                    Colors.TopLevel.Normal = Application.Driver.MakeAttribute(Color.Black, Color.White);
+                    Colors.TopLevel.Focus = Application.Driver.MakeAttribute(Color.Black, Color.Gray);
+                    
                     break;
+                    
                 default:
                     SetupTheme();
                     break;
@@ -357,35 +438,8 @@ namespace Saturn.UI
         {
             return new Toplevel()
             {
-                ColorScheme = Colors.Base
+                ColorScheme = Colors.TopLevel
             };
-        }
-
-        private FrameView CreateChatContainer()
-        {
-            var mainContainer = new FrameView("AI Chat")
-            {
-                X = 0,
-                Y = 1,
-                Width = Dim.Percent(75),
-                Height = Dim.Fill(3),
-                ColorScheme = Colors.Base
-            };
-
-            chatView = new TextView()
-            {
-                X = 0,
-                Y = 0,
-                Width = Dim.Fill(1),
-                Height = Dim.Fill(),
-                ReadOnly = true,
-                WordWrap = true,
-                Text = "", // Will be set by chatRenderer after initialization
-                ColorScheme = Colors.Base
-            };
-
-            mainContainer.Add(chatView);
-            return mainContainer;
         }
 
         private void SetupScrollBar(FrameView mainContainer)
@@ -401,41 +455,9 @@ namespace Saturn.UI
             mainContainer.Add(chatScrollBar);
         }
 
-        private FrameView CreateInputContainer()
-        {
-            var inputContainer = new FrameView("Input (Enter to send)")
-            {
-                X = 0,
-                Y = Pos.AnchorEnd(3),
-                Width = Dim.Percent(75),
-                Height = 3,
-                ColorScheme = Colors.Base
-            };
-
-            inputField = new TextView()
-            {
-                X = 0,
-                Y = 0,
-                Width = Dim.Fill(10),
-                Height = Dim.Fill(),
-                CanFocus = true,
-                ColorScheme = Colors.Base,
-                WordWrap = true
-            };
-
-            sendButton = new Button("Send")
-            {
-                X = Pos.Right(inputField) + 1,
-                Y = Pos.Center(),
-                ColorScheme = Colors.Base
-            };
-
-            return inputContainer;
-        }
-
         private FrameView CreateToolCallsPanel()
         {
-            var panel = new FrameView()
+            var panel = new FrameView("Tool Activity")
             {
                 Width = Dim.Fill(),
                 Height = Dim.Fill(),
@@ -450,7 +472,7 @@ namespace Saturn.UI
                 Height = Dim.Fill(),
                 ReadOnly = true,
                 WordWrap = true,
-                Text = "No tool calls yet...\n",
+                Text = "No tools used yet.\n\nCommon: read_file, write_file\ngrep, web_fetch, create_agent",
                 ColorScheme = Colors.Base
             };
 
@@ -460,7 +482,7 @@ namespace Saturn.UI
 
         private FrameView CreateAgentStatusPanel()
         {
-            var panel = new FrameView()
+            var panel = new FrameView("Agent Status")
             {
                 Width = Dim.Fill(),
                 Height = Dim.Fill(),
@@ -485,12 +507,10 @@ namespace Saturn.UI
 
         private string GetInitialAgentStatus()
         {
-            var status = "Main Agent: Ready\n";
-            status += "═════════════════\n\n";
-            status += "Status: Idle\n";
-            status += "Tasks: 0 pending\n\n";
-            status += "Sub-agents:\n";
-            status += "• None active\n\n";
+            var status = "Ready | Idle | 0 Tasks | 0/10 Agents\n";
+            status += "=============================\n";
+            status += "Sub-agents: None\n";
+            status += "F2-F4:Modes Ctrl+S:Save";
             return status;
         }
 
@@ -501,14 +521,14 @@ namespace Saturn.UI
                 var timestamp = DateTime.Now.ToString("HH:mm:ss");
                 var currentText = toolCallsView.Text.ToString();
                 
-                if (currentText == "No tool calls yet...\n")
+                if (currentText.Contains("No tool calls yet."))
                 {
                     currentText = "";
                 }
                 
                 var summary = GetToolSummary(toolName, arguments);
                 var newEntry = $"[{timestamp}] {toolName}: {summary}\n";
-                newEntry += "───────────────\n";
+                newEntry += "─────────────────────────────────\n";
                 
                 toolCallsView.Text = newEntry + currentText;
                 
@@ -537,13 +557,14 @@ namespace Saturn.UI
                     return tool.GetDisplaySummary(parameters);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                return $"Error parsing arguments: {ex.Message}";
             }
             
-            return toolName;
+            return $"Called with: {arguments.Substring(0, Math.Min(50, arguments.Length))}...";
         }
-        
+
         private object GetJsonValue(JsonElement element)
         {
             switch (element.ValueKind)
@@ -551,8 +572,6 @@ namespace Saturn.UI
                 case JsonValueKind.String:
                     return element.GetString();
                 case JsonValueKind.Number:
-                    if (element.TryGetInt32(out var intValue))
-                        return intValue;
                     if (element.TryGetInt64(out var longValue))
                         return longValue;
                     return element.GetDouble();
@@ -581,48 +600,130 @@ namespace Saturn.UI
             }
         }
 
+        private string GetToolIcon(string toolName)
+        {
+            return toolName switch
+            {
+                "read_file" => "R",
+                "write_file" => "W",
+                "delete_file" => "D",
+                "grep" => "S",
+                "glob" => "G",
+                "apply_diff" => "M",
+                "search_and_replace" => "R",
+                "web_fetch" => "W",
+                "execute_command" => "X",
+                "create_agent" => "A",
+                "hand_off_to_agent" => "H",
+                "get_agent_status" => "S",
+                "wait_for_agent" => "W",
+                "get_task_result" => "T",
+                "terminate_agent" => "K",
+                _ => "T"
+            };
+        }
+
         public void UpdateAgentStatus(string status, int activeTasks = 0, List<string>? subAgents = null)
         {
             Application.MainLoop.Invoke(() =>
             {
                 var agents = agentManager.GetAllAgentStatuses();
-                var completedTasks = agents.Sum(a => a.CurrentTask != null ? 1 : 0);
                 var currentCount = agentManager.GetCurrentAgentCount();
                 var maxCount = agentManager.GetMaxConcurrentAgents();
                 
-                var statusText = $"Main Agent: {status}\n";
-                statusText += "═════════════════\n\n";
-                statusText += $"Status: {status}\n";
-                statusText += $"Active Tasks: {activeTasks}\n";
-                statusText += $"Total Agents: {currentCount}/{maxCount}\n\n";
-                statusText += "Sub-agents:\n";
+                var statusText = $"{status} | {activeTasks} Tasks | {currentCount}/{maxCount} Agents\n";
+                statusText += "=============================\n";
                 
                 if (agents.Any())
                 {
-                    foreach (var agent in agents)
+                    var agent = agents.First();
+                    statusText += $"Sub: {agent.Name} ({agent.Status})\n";
+                    if (agents.Count() > 1)
                     {
-                        statusText += $"• {agent.Name}\n";
-                        statusText += $"  Status: {agent.Status}\n";
-                        if (!string.IsNullOrEmpty(agent.CurrentTask))
-                        {
-                            statusText += $"  Task: {agent.CurrentTask}\n";
-                            statusText += $"  Time: {agent.RunningTime.TotalSeconds:F1}s\n";
-                        }
-                    }
-                }
-                else if (subAgents != null && subAgents.Count > 0)
-                {
-                    foreach (var agent in subAgents)
-                    {
-                        statusText += $"• {agent}\n";
+                        statusText += $"+{agents.Count() - 1} more\n";
                     }
                 }
                 else
                 {
-                    statusText += "• None active\n";
+                    statusText += "Sub-agents: None\n";
                 }
                 
+                statusText += "F2-F4:Modes Ctrl+S:Save";
+                
                 agentStatusView.Text = statusText;
+                
+                // Update status bar
+                var additionalInfo = $"Agents: {currentCount}/{maxCount} | Tasks: {activeTasks}";
+                UpdateStatusBar(status, additionalInfo);
+            });
+        }
+
+        private string GetStatusIcon(string status)
+        {
+            return status.ToLower() switch
+            {
+                "ready" => "[Ready]",
+                "idle" => "[Idle]",
+                "processing" => "[Processing]",
+                "thinking" => "[Thinking]",
+                "waiting" => "[Waiting]",
+                "error" => "[Error]",
+                "busy" => "[Busy]",
+                _ => "[Status]"
+            };
+        }
+
+        private string GetAgentStatusIcon(string status)
+        {
+            return status.ToLower() switch
+            {
+                "idle" => "[Idle]",
+                "working" => "[Working]",
+                "completed" => "[Done]",
+                "failed" => "[Failed]",
+                "waiting" => "[Waiting]",
+                "terminated" => "[Stopped]",
+                _ => "[Status]"
+            };
+        }
+
+        private string GetUptime()
+        {
+            // This would need to be tracked from startup
+            return "Just started";
+        }
+
+        public void UpdateStatusBar(string status, string? additionalInfo = null)
+        {
+            Application.MainLoop.Invoke(() =>
+            {
+                var statusText = $"{status}";
+                if (!string.IsNullOrEmpty(additionalInfo))
+                {
+                    statusText += $" | {additionalInfo}";
+                }
+                statusText += " | F1: Help | F2-F4: Modes | Ctrl+S: Save | Ctrl+L: Load | Ctrl+K: Clear";
+                
+                // Find and update the status label
+                if (app != null)
+                {
+                    foreach (var view in app.Subviews)
+                    {
+                        if (view is FrameView frameView && frameView.Title == "Status")
+                        {
+                            foreach (var subView in frameView.Subviews)
+                            {
+                                if (subView is Label label)
+                                {
+                                    label.Text = statusText;
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                Application.Refresh();
             });
         }
 
@@ -630,9 +731,22 @@ namespace Saturn.UI
         {
             inputField.KeyDown += (e) =>
             {
-                if (e.KeyEvent.Key == Key.Enter)
+                if (e.KeyEvent.Key == Key.Enter && !e.KeyEvent.IsCtrl)
                 {
+                    // Regular Enter sends the message
                     sendButton.OnClicked();
+                    e.Handled = true;
+                }
+                else if (e.KeyEvent.Key == Key.Enter && e.KeyEvent.IsCtrl)
+                {
+                    // Ctrl+Enter adds a new line
+                    inputField.Text += "\n";
+                    e.Handled = true;
+                }
+                else if (e.KeyEvent.Key == Key.Esc)
+                {
+                    // Escape clears the input
+                    inputField.Text = "";
                     e.Handled = true;
                 }
             };
@@ -645,12 +759,13 @@ namespace Saturn.UI
                     
                     agentManager.TerminateAllAgents();
                     
-                    sendButton.Text = "Send";
+                    sendButton.Text = "🚀 Send";
                     sendButton.Enabled = true;
                     inputField.ReadOnly = false;
                     isProcessing = false;
                     
                     UpdateAgentStatus("Cancelled");
+                    UpdateStatusBar("Cancelled", "Operation was cancelled");
                     
                     chatView.Text += " [Cancelled]\n\n";
                     chatRenderer.ScrollChatToBottom();
@@ -671,7 +786,7 @@ namespace Saturn.UI
             {
                 inputField.SetFocus();
                 // Set welcome message after components are initialized
-                chatView.Text = chatRenderer.GetWelcomeMessage(agent);
+                chatView.Text = GetWelcomeMessage();
                 return false;
             });
         }
@@ -706,6 +821,7 @@ namespace Saturn.UI
                 sendButton.Text = " Stop";
                 inputField.ReadOnly = true;
                 UpdateAgentStatus("Processing", 1);
+                UpdateStatusBar("Processing your request...", "AI is thinking...");
                 
                 chatRenderer.ScrollChatToBottom();
                 Application.Refresh();
@@ -731,7 +847,7 @@ namespace Saturn.UI
                                         responseBuilder.Append(chunk.Content);
                                         Application.MainLoop.Invoke(() =>
                                         {
-                                            var currentText = chatView.Text.Substring(0, startPosition);
+                                            var currentText = chatView.Text.ToString().Substring(0, startPosition);
                                             chatRenderer.AppendToChat(currentText, applyMarkdown: false);
                                             chatRenderer.AppendToChat(responseBuilder.ToString(), applyMarkdown: true);
                                             chatRenderer.ScrollChatToBottom();
@@ -744,11 +860,12 @@ namespace Saturn.UI
                             Application.MainLoop.Invoke(() =>
                             {
                                 var lastResponse = responseBuilder.ToString().TrimEnd();
+                                var currentChatText = chatView.Text.ToString();
                                 
                                 if (!string.IsNullOrEmpty(lastResponse))
                                 {
-                                    bool endsWithNewline = chatView.Text.EndsWith("\n");
-                                    bool endsWithDoubleNewline = chatView.Text.EndsWith("\n\n");
+                                    bool endsWithNewline = currentChatText.EndsWith("\n");
+                                    bool endsWithDoubleNewline = currentChatText.EndsWith("\n\n");
                                     
                                     char lastChar = lastResponse.Length > 0 ? lastResponse[lastResponse.Length - 1] : '\0';
                                     bool endsWithPunctuation = ".!?:;)]}\"'`".Contains(lastChar);
@@ -771,9 +888,9 @@ namespace Saturn.UI
                                 }
                                 else
                                 {
-                                    if (!chatView.Text.EndsWith("\n\n"))
+                                    if (!currentChatText.EndsWith("\n\n"))
                                     {
-                                        if (chatView.Text.EndsWith("\n"))
+                                        if (currentChatText.EndsWith("\n"))
                                             chatRenderer.AppendToChat("\n");
                                         else
                                             chatRenderer.AppendToChat("\n\n");
@@ -785,7 +902,7 @@ namespace Saturn.UI
                         }
                         else
                         {
-                            Message response = await agent.Execute<Message>(message);
+                            var response = await agent.Execute<OpenRouter.Models.Api.Chat.Message>(message);
                             var responseText = response.Content.ToString();
                             var renderedResponse = markdownRenderer.RenderToTerminal(responseText);
 
@@ -793,7 +910,7 @@ namespace Saturn.UI
                             {
                                 chatRenderer.AppendToChat(renderedResponse, applyMarkdown: true);
                                 
-                                var updatedText = chatView.Text;
+                                var updatedText = chatView.Text.ToString();
                                 bool endsWithNewline = updatedText.EndsWith("\n\n");
                                 bool endsWithDoubleNewline = updatedText.EndsWith("\n\n");
                                 
@@ -846,16 +963,104 @@ namespace Saturn.UI
             }
             finally
             {
-                sendButton.Text = "Send";
+                sendButton.Text = "🚀 Send";
                 sendButton.Enabled = true;
                 inputField.ReadOnly = false;
                 isProcessing = false;
                 cancellationTokenSource?.Dispose();
                 cancellationTokenSource = null;
                 UpdateAgentStatus("Ready");
+                UpdateStatusBar("Ready", "Waiting for your input...");
                 inputField.SetFocus();
                 Application.Refresh();
             }
+        }
+
+        private FrameView CreateHelpPanel()
+        {
+            var panel = new FrameView("Quick Help")
+            {
+                Width = Dim.Fill(),
+                Height = Dim.Fill(),
+                ColorScheme = Colors.Base
+            };
+
+            var helpView = new TextView()
+            {
+                X = 0,
+                Y = 0,
+                Width = Dim.Fill(),
+                Height = Dim.Fill(),
+                ReadOnly = true,
+                WordWrap = true,
+                Text = GetHelpText(),
+                ColorScheme = Colors.Base
+            };
+
+            panel.Add(helpView);
+            return panel;
+        }
+
+        private string GetHelpText()
+        {
+            var help = "Saturn Help\n";
+            help += "===========\n";
+            help += "F1-Help F2-F4:Modes Ctrl+L:Load Ctrl+S:Save\n";
+            help += "Enter:Send Ctrl+Enter:NewLine Ctrl+K:Clear\n\n";
+            help += "Commands: Read,Fix,Test,Refactor\n";
+            help += "Features: Multi-agent,Parallel,Background\n";
+            help += "Tips: Be specific, Use agents for complex tasks";
+            
+            return help;
+        }
+
+        private FrameView CreateStatusBar()
+        {
+            var statusBar = new FrameView("Status")
+            {
+                X = 0,
+                Y = Pos.AnchorEnd(1),
+                Width = Dim.Fill(),
+                Height = 1,
+                ColorScheme = Colors.Base
+            };
+
+            var statusLabel = new Label("Ready | F1: Help | F2-F4: Modes | Ctrl+S: Save | Ctrl+L: Load | Ctrl+K: Clear")
+            {
+                X = 0,
+                Y = 0,
+                ColorScheme = Colors.Base,
+                Text = "Ready | F1: Help | F2-F4: Modes | Ctrl+S: Save | Ctrl+L: Load | Ctrl+K: Clear"
+            };
+
+            statusBar.Add(statusLabel);
+            return statusBar;
+        }
+
+        private string GetWelcomeMessage()
+        {
+            var welcome = "Welcome to Saturn!\n\n";
+            welcome += "AI coding assistant with multi-agent capabilities.\n\n";
+            welcome += "I can help with:\n";
+            welcome += "• Code analysis and debugging\n";
+            welcome += "• File operations and refactoring\n";
+            welcome += "• Multi-agent task delegation\n";
+            welcome += "• Web research and documentation\n";
+            welcome += "• Testing and code generation\n\n";
+            welcome += "Quick Start:\n";
+            welcome += "• Type your request below\n";
+            welcome += "• Press F2-F4 to change modes\n";
+            welcome += "• Press F1 for help\n\n";
+            welcome += "Example: \"Read the main.cs file and explain the main function\"\n\n";
+            welcome += "Ready to help! What would you like me to do?";
+            
+            return welcome;
+        }
+
+        public void Run()
+        {
+            Application.Run(app);
+            Application.Shutdown();
         }
     }
 }

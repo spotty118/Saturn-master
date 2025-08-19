@@ -14,12 +14,12 @@ namespace Saturn.Data;
 public class ChatHistoryRepository : IDisposable
 {
     private readonly string _connectionString;
-    private SqliteConnection? _connection;
     private readonly string _dbPath;
+    private bool _disposed = false;
 
     public ChatHistoryRepository(string? workspacePath = null)
     {
-        var saturnDir = workspacePath != null 
+        var saturnDir = workspacePath != null
             ? Path.Combine(workspacePath, ".saturn")
             : Path.Combine(Environment.CurrentDirectory, ".saturn");
         
@@ -29,7 +29,15 @@ public class ChatHistoryRepository : IDisposable
         }
 
         _dbPath = Path.Combine(saturnDir, "chats.db");
-        _connectionString = $"Data Source={_dbPath}";
+        
+        // SECURITY FIX: Use SqliteConnectionStringBuilder for safe connection string construction
+        var connectionStringBuilder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath,
+            Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate
+        };
+        _connectionString = connectionStringBuilder.ConnectionString;
+        
         InitializeDatabase();
     }
 
@@ -142,11 +150,12 @@ public class ChatHistoryRepository : IDisposable
         return connection;
     }
 
-    public async Task<ChatSession> CreateSessionAsync(string title, string chatType = "main", 
+    public async Task<ChatSession> CreateSessionAsync(string title, string chatType = "main",
         string? parentSessionId = null, string? agentName = null, string? model = null,
         string? systemPrompt = null, double? temperature = null, int? maxTokens = null,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         var session = new ChatSession
         {
             Title = title,
@@ -207,22 +216,22 @@ public class ChatHistoryRepository : IDisposable
         using var connection = CreateConnection();
 
         var sql = @"
-            INSERT INTO ChatMessages (Id, SessionId, Role, Content, Name, AgentName, 
+            INSERT INTO ChatMessages (Id, SessionId, Role, Content, Name, AgentName,
                 Timestamp, SequenceNumber, ToolCallsJson, ToolCallId)
-            VALUES (@Id, @SessionId, @Role, @Content, @Name, @AgentName, 
+            VALUES (@Id, @SessionId, @Role, @Content, @Name, @AgentName,
                 @Timestamp, @SequenceNumber, @ToolCallsJson, @ToolCallId)";
 
         using var cmd = new SqliteCommand(sql, connection);
-        cmd.Parameters.AddWithValue("@Id", chatMessage.Id);
-        cmd.Parameters.AddWithValue("@SessionId", chatMessage.SessionId);
-        cmd.Parameters.AddWithValue("@Role", chatMessage.Role);
-        cmd.Parameters.AddWithValue("@Content", chatMessage.Content);
-        cmd.Parameters.AddWithValue("@Name", (object?)chatMessage.Name ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@AgentName", (object?)chatMessage.AgentName ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@Timestamp", chatMessage.Timestamp.ToString("O"));
-        cmd.Parameters.AddWithValue("@SequenceNumber", chatMessage.SequenceNumber);
-        cmd.Parameters.AddWithValue("@ToolCallsJson", (object?)chatMessage.ToolCallsJson ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("@ToolCallId", (object?)chatMessage.ToolCallId ?? DBNull.Value);
+        cmd.Parameters.Add(new SqliteParameter("@Id", chatMessage.Id));
+        cmd.Parameters.Add(new SqliteParameter("@SessionId", chatMessage.SessionId));
+        cmd.Parameters.Add(new SqliteParameter("@Role", chatMessage.Role));
+        cmd.Parameters.Add(new SqliteParameter("@Content", chatMessage.Content));
+        cmd.Parameters.Add(new SqliteParameter("@Name", (object?)chatMessage.Name ?? DBNull.Value));
+        cmd.Parameters.Add(new SqliteParameter("@AgentName", (object?)chatMessage.AgentName ?? DBNull.Value));
+        cmd.Parameters.Add(new SqliteParameter("@Timestamp", chatMessage.Timestamp.ToString("O")));
+        cmd.Parameters.Add(new SqliteParameter("@SequenceNumber", chatMessage.SequenceNumber));
+        cmd.Parameters.Add(new SqliteParameter("@ToolCallsJson", (object?)chatMessage.ToolCallsJson ?? DBNull.Value));
+        cmd.Parameters.Add(new SqliteParameter("@ToolCallId", (object?)chatMessage.ToolCallId ?? DBNull.Value));
 
         await cmd.ExecuteNonQueryAsync(cancellationToken);
 
@@ -604,6 +613,34 @@ public class ChatHistoryRepository : IDisposable
 
     public void Dispose()
     {
-        _connection?.Dispose();
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+    
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed)
+        {
+            if (disposing)
+            {
+                // Dispose managed resources
+                _connection?.Dispose();
+            }
+            
+            _disposed = true;
+        }
+    }
+    
+    ~ChatHistoryRepository()
+    {
+        Dispose(false);
+    }
+    
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(nameof(ChatHistoryRepository));
+        }
     }
 }

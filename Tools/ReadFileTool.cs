@@ -128,13 +128,14 @@ Examples:
             {
                 return CreateErrorResult($"File NOT found: {path}");
             }
-            
+
             try
             {
+                ValidatePathSecurity(path);
                 var encoding = GetEncoding(encodingName);
                 var fileInfo = new FileInfo(path);
                 var result = await ReadFileContent(path, encoding, startLine, endLine, includeLineNumbers);
-                
+
                 return FormatResults(result, fileInfo, encoding, includeMetadata);
             }
             catch (UnauthorizedAccessException)
@@ -258,6 +259,27 @@ Examples:
             public List<string> Lines { get; set; } = new List<string>();
             public int TotalLines { get; set; }
             public int ReadLines { get; set; }
+        }
+
+        private void ValidatePathSecurity(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                throw new ArgumentException("Path cannot be null or empty");
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
+
+            if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SecurityException($"Access denied: Path '{path}' is outside the working directory");
+            }
+
+            if (path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+            {
+                throw new ArgumentException($"File path contains invalid characters: {path}");
+            }
         }
     }
 }

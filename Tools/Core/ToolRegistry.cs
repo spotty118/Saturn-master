@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -10,40 +11,69 @@ namespace Saturn.Tools.Core
 {
     public class ToolRegistry
     {
-        private readonly Dictionary<string, ITool> _tools = new Dictionary<string, ITool>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, ITool> _tools = new ConcurrentDictionary<string, ITool>(StringComparer.OrdinalIgnoreCase);
         private readonly AgentManager agentManager;
+        private readonly object _registrationLock = new object();
         
         public ToolRegistry(AgentManager agentManager)
         {
-            this.agentManager = agentManager;
+            this.agentManager = agentManager ?? throw new ArgumentNullException(nameof(agentManager));
             AutoRegisterTools();
         }
         
         private void AutoRegisterTools()
         {
-            var toolType = typeof(ITool);
-            var assembly = Assembly.GetExecutingAssembly();
-            
-            var toolTypes = assembly.GetTypes()
-                .Where(t => t.IsClass && !t.IsAbstract && toolType.IsAssignableFrom(t));
-            
-            foreach (var type in toolTypes)
+            lock (_registrationLock)
             {
                 try
                 {
-                    var tool = (ITool)Activator.CreateInstance(type);
+                    var toolType = typeof(ITool);
+                    var assembly = Assembly.GetExecutingAssembly();
                     
-                    // Inject dependencies if the tool needs them
-                    if (tool is IDependencyInjectable injectable)
+                    var toolTypes = assembly.GetTypes()
+                        .Where(t => t.IsClass && !t.IsAbstract && toolType.IsAssignableFrom(t))
+                        .ToList(); // Materialize to avoid multiple enumeration
+                    
+                    foreach (var type in toolTypes)
                     {
-                        injectable.InjectDependencies(agentManager);
+                        try
+                        {
+                            // Check if tool is already registered to avoid duplicates
+                            var existingTool = _tools.Values.FirstOrDefault(t => t.GetType() == type);
+                            if (existingTool != null)
+                            {
+                                continue;
+                            }
+                            
+                            var tool = (ITool?)Activator.CreateInstance(type);
+                            if (tool == null)
+                            {
+                                Console.WriteLine($"Warning: Failed to create instance of tool {type.Name}");
+                                continue;
+                            }
+                            
+                            // Inject dependencies if the tool needs them
+                            if (tool is IDependencyInjectable injectable)
+                            {
+                                injectable.InjectDependencies(agentManager);
+                            }
+                            
+                            Register(tool);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Failed to auto-register tool {type.Name}: {ex.Message}");
+                            if (ex.InnerException != null)
+                            {
+                                Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
+                            }
+                        }
                     }
-                    
-                    Register(tool);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Failed to auto-register tool {type.Name}: {ex.Message}");
+                    Console.WriteLine($"Critical error during tool auto-registration: {ex.Message}");
+                    throw; // Re-throw critical errors
                 }
             }
         }
@@ -55,23 +85,35 @@ namespace Saturn.Tools.Core
                 throw new ArgumentNullException(nameof(tool));
             }
             
-            _tools[tool.Name] = tool;
+            if (string.IsNullOrWhiteSpace(tool.Name))
+            {
+                throw new ArgumentException("Tool name cannot be null or empty", nameof(tool));
+            }
+            
+            _tools.AddOrUpdate(tool.Name, tool, (key, oldValue) => tool);
         }
         
         public void Register<T>() where T : ITool, new()
         {
-            var tool = new T();
-            
-            // Inject dependencies if the tool needs them
-            if (tool is IDependencyInjectable injectable)
+            try
             {
-                injectable.InjectDependencies(agentManager);
+                var tool = new T();
+                
+                // Inject dependencies if the tool needs them
+                if (tool is IDependencyInjectable injectable)
+                {
+                    injectable.InjectDependencies(agentManager);
+                }
+                
+                Register(tool);
             }
-            
-            Register(tool);
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Failed to register tool of type {typeof(T).Name}", ex);
+            }
         }
         
-        public ITool Get(string name)
+        public ITool? Get(string name)
         {
             if (string.IsNullOrEmpty(name))
             {
@@ -82,12 +124,12 @@ namespace Saturn.Tools.Core
             return tool;
         }
         
-        public ITool GetTool(string name)
+        public ITool? GetTool(string name)
         {
             return Get(name);
         }
         
-        public T Get<T>(string name) where T : class, ITool
+        public T? Get<T>(string name) where T : class, ITool
         {
             return Get(name) as T;
         }

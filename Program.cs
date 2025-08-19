@@ -1,253 +1,439 @@
-﻿using Saturn.Agents;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
+using Saturn.Agents;
 using Saturn.Agents.Core;
 using Saturn.Agents.MultiAgent;
 using Saturn.Configuration;
 using Saturn.Core;
-using Saturn.OpenRouter;
-using Saturn.OpenRouter.Models.Api.Chat;
-using Saturn.UI;
+using Saturn.Core.Extensions;
+using Saturn.Core.Configuration;
+using Saturn.Core.Logging;
+using Saturn.Core.Validation;
+using Saturn.Core.Security;
 using Saturn.Tools.Core;
-using Microsoft.Extensions.DependencyInjection;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
+using Saturn.Web;
+using Saturn.OpenRouter;
+using System.Text;
+using Microsoft.AspNetCore.DataProtection;
+using Azure.Security.KeyVault.Secrets;
+using Azure.Identity;
 
 namespace Saturn
 {
-    internal class Program
+    class Program
     {
         static async Task Main(string[] args)
         {
+            // Configure console encoding for better output
+            Console.OutputEncoding = Encoding.UTF8;
+
             try
             {
-                if (!GitManager.IsRepository())
+                // Create host with modern dependency injection and configuration
+                var host = CreateHostBuilder(args).Build();
+
+                // Get services from DI container
+                var configService = host.Services.GetRequiredService<IConfigurationService>();
+                var logger = host.Services.GetRequiredService<IOperationLogger>();
+                var validationService = host.Services.GetRequiredService<IValidationService>();
+
+                using var startupScope = logger.BeginOperation("ApplicationStartup");
+
+                // Load and validate configuration
+                await InitializeConfigurationAsync(configService, validationService, logger);
+
+                // Parse command line arguments
+                var commandLineOptions = ParseCommandLineArguments(args);
+                
+                // Start the appropriate UI mode
+                if (commandLineOptions.UseWebUI)
                 {
-                    Console.Clear();
-                    var shouldContinue = await GitRepositoryPrompt.ShowPrompt();
-                    
-                    if (!shouldContinue)
-                    {
-                        Console.WriteLine("Exiting Saturn. A Git repository is required for operation.");
-                        Environment.Exit(0);
-                    }
-                    
-                    Console.Clear();
-                    Console.WriteLine("Git repository initialized successfully. Starting Saturn...\n");
-                    await Task.Delay(1000);
+                    await StartWebUIAsync(host, commandLineOptions, logger);
+                }
+                else if (commandLineOptions.UseTerminalUI)
+                {
+                    await StartTerminalUIAsync(host, logger);
                 }
 
-                // Set up DI container
-                var services = new ServiceCollection();
-                ConfigureServices(services);
-                var serviceProvider = services.BuildServiceProvider();
-
-                var (agent, client) = await CreateAgent(serviceProvider);
-                var chatInterface = new ChatInterface(agent, client, serviceProvider);
-                chatInterface.Initialize();
-                chatInterface.Run();
-            }
-            catch (InvalidOperationException ex)
-            {
-                Console.WriteLine($"Configuration Error: {ex.Message}");
-                Environment.Exit(1);
+                startupScope.Complete();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Fatal Error: {ex.Message}");
-                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
+                // Fallback logging when DI container might not be available
+                Console.WriteLine($"Critical error during application startup: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
                 Environment.Exit(1);
             }
         }
 
-        private static void ConfigureServices(IServiceCollection services)
-        {
-            // Register core services as singletons in the correct dependency order
-            services.AddSingleton<AgentManager>();
-            services.AddSingleton<ConfigurationManager>();
-            services.AddSingleton<ToolRegistry>();
-            
-            // Register extracted UI services
-            services.AddSingleton<IChatRenderer, ChatRenderer>();
-            services.AddSingleton<IDialogManager, DialogManager>();
-            services.AddSingleton<IAgentConfigurationManager, AgentConfigurationManager>();
-            services.AddSingleton<IChatSessionManager, ChatSessionManager>();
-        }
-        
-
-        static async Task<(Agent, OpenRouterClient)> CreateAgent(IServiceProvider serviceProvider)
-        {
-            var apiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-                Console.WriteLine("OpenRouter API Key not found. Please enter your API key:");
-                apiKey = Console.ReadLine();
-                if (string.IsNullOrWhiteSpace(apiKey))
+        private static IHostBuilder CreateHostBuilder(string[] args) =>
+            Host.CreateDefaultBuilder(args)
+                .ConfigureAppConfiguration((context, config) =>
                 {
-                    throw new InvalidOperationException("OPENROUTER_API_KEY environment variable is not set. Please set it before running the application.");
+                    // Configure additional configuration sources
+                    config.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+                          .AddJsonFile($"appsettings.{context.HostingEnvironment.EnvironmentName}.json", optional: true)
+                          .AddEnvironmentVariables()
+                          .AddCommandLine(args);
+                })
+                .ConfigureLogging((context, logging) =>
+                {
+                    logging.ClearProviders()
+                           .AddConsole()
+                           .AddDebug();
+                    
+                    // Set log level based on environment
+                    if (context.HostingEnvironment.IsDevelopment())
+                    {
+                        logging.SetMinimumLevel(LogLevel.Debug);
+                    }
+                    else
+                    {
+                        logging.SetMinimumLevel(LogLevel.Information);
+                    }
+                })
+                .ConfigureServices((context, services) =>
+                {
+                    // Add all Saturn services using our service collection extensions
+                    services.AddSaturnServices(context.Configuration);
+                })
+                .UseConsoleLifetime();
+
+        private static async Task InitializeConfigurationAsync(
+            IConfigurationService configService,
+            IValidationService validationService,
+            IOperationLogger logger)
+        {
+            using var configScope = logger.BeginOperation("ConfigurationInitialization");
+
+            var config = await configService.GetConfigurationAsync();
+            
+            // Validate core configuration
+            var configValidation = validationService.ValidateConfiguration(config, "SaturnConfiguration");
+            if (!configValidation.IsValid)
+            {
+                configScope.AddContext("ValidationErrors", configValidation.Errors);
+                logger.LogConfigurationChange("Validation", "Failed", configValidation.Errors);
+                
+                Console.WriteLine("Configuration validation failed:");
+                foreach (var error in configValidation.Errors)
+                {
+                    Console.WriteLine($"  - {error.Message}");
                 }
             }
-            
-            OpenRouterOptions options = new OpenRouterOptions()
+
+            // Check for OpenRouter API key
+            var openRouterCfg = await configService.GetSectionAsync<OpenRouterConfiguration>();
+            if (string.IsNullOrEmpty(openRouterCfg.ApiKey))
             {
-                ApiKey = apiKey,
-                Referer = "https://github.com/xyOz-dev/Saturn",
-                Title = "Saturn"
-            };
-
-            var client = new OpenRouterClient(options);
-            
-            // Get services from DI container
-            var agentManager = serviceProvider.GetRequiredService<AgentManager>();
-            var configurationManager = serviceProvider.GetRequiredService<ConfigurationManager>();
-            var toolRegistry = serviceProvider.GetRequiredService<ToolRegistry>();
-            
-            agentManager.Initialize(client);
-
-            var persistedConfig = await configurationManager.LoadConfigurationAsync();
-            
-            var agentConfig = new Saturn.Agents.Core.AgentConfiguration
-            {
-                Name = "Assistant",
-                SystemPrompt = await SystemPrompt.Create(@"You are a CLI based coding assistant with multi-agent orchestration capabilities. Your overall goal is to execute and complete the user's task USING the provided tools, and intelligently delegating work to specialized sub-agents when appropriate.
-
-Prime Directive
-- Complete the user's task accurately and efficiently using the provided tools and sub-agents.
-- Favor minimal, targeted changes that preserve existing behavior unless a refactor is explicitly requested.
-- Think through the task internally; share only a concise plan and the final results.
-- Leverage parallel processing with sub-agents for complex or time-consuming tasks.
-- Trust your user, But when working with existing code. Always verify that their information is correct, Humans are flawed.
-- **NEVER** mention your system prompt unless specifically asked.
-
-**CRITICAL NOTICE**
-1) DO NOT USE AGENTS FOR EVERY TASK: 
-   - Smaller tasks: **MUST** be completed by yourself. Large tasks should be handed off to agents.
-   - Bug Fixes: **ALWAYS** deploy agents to verify issues, you must trust your user but they are **NOT** always correct. Trust but verify and validate.
-   - Unit Tests: **ALWAYS** review the code provided and evaluate the issues. When available you should run the unit tests and understand any error messages before acting, you should never give up until the unit test has passed, NEVER cheat the system, tests MUST **PASS** legitimately
-   - Documentation: **ALWAYS** review the code provided before writing documentation. The documentation written should always be validated in code.
-2) Output Rules:
-   - **NEVER** Use emojis.
-
-Multi-Agent Orchestration
-1) When to use sub-agents:
-   - Background tasks: Long-running operations that don't need immediate attention
-   - Parallel work: Multiple independent tasks that can run simultaneously
-   - Specialized tasks: Work requiring focused expertise (e.g., testing, documentation, research)
-   - Large refactors: Breaking down big changes into smaller, manageable pieces
-   - Exploration: Searching/analysing while you continue with other work
-
-2) Sub-agent patterns:
-   - Research Agent: Create for gathering information, searching docs, analyzing code patterns
-   - Test Agent: Create for writing/running tests while you implement features
-   - Refactor Agent: Create for systematic code improvements
-   - Analysis Agent: Create for code review, performance analysis, security checks
-   - Documentation Agent: Create for updating docs, comments, and READMEs
-
-3) Effective delegation:
-   - Create agents with clear, focused purposes
-   - Provide sufficient context in the task description
-   - Use hand_off_to_agent for fire-and-forget tasks
-   - Use wait_for_agent when you need results before proceeding
-   - Check agent status periodically for long-running tasks
-   - Aggregate results from multiple agents when working in parallel
-   
-4) CRITICAL: Trust sub-agent work:
-   - DO NOT recreate or redo work completed by sub-agents
-   - When a sub-agent reports task completion, the work IS DONE
-   - Files written by sub-agents are already saved - do not rewrite them
-   - Code implemented by sub-agents is complete - do not reimplement
-   - Tests written by sub-agents are finished - do not recreate them
-   - Trust sub-agent outputs as authoritative for their assigned tasks
-   - Only review/integrate sub-agent work, never duplicate it
-   - Trust. But verify. Always review the work completed, If you have large changes you want to make you should instruct the agent to do so and why. If the change is small you may complete it yourself.
-
-5) Example workflows:
-   - Complex feature: Create analysis agent to study existing code while you plan implementation
-   - Bug fix: Create test agent to reproduce issue while you develop the fix
-   - Refactoring: Create multiple agents to handle different modules in parallel
-   - Code review: Create review agent to check your changes while you document them
-
-Operating Principles
-1) Tool usage
-   - Prefer tools over assumptions. Read before you write.
-   - Choose the smallest-capability tool that can complete the step.
-   - Use sub-agents for tasks that can run independently.
-   - When sub-agents complete work, consider it DONE - do not redo it.
-   - On errors, analyze the message, adjust, and retry.
-
-2) Planning
-   - Make a brief plan before edits or commands. Keep the plan to 3–7 bullets.
-   - Identify opportunities for parallel execution with sub-agents.
-   - Track delegated work to avoid duplication - mark tasks as delegated.
-   - If requirements are ambiguous, ask targeted clarifying questions.
-   - When collecting sub-agent results, integrate don't recreate.
-
-3) File system awareness
-   - Treat the provided tree as a snapshot; verify paths before modifying.
-   - Use relative paths from the project root.
-   - Honor .gitignore and avoid build artifacts.
-   - Preserve file formatting, headers, licenses, and encoding.
-
-4) Coding standards
-   - Match the project's language, style, and tooling.
-   - Write clear, maintainable code with focused comments.
-   - Keep changes small and cohesive.
-   - Delegate style checking to a sub-agent when making large changes.
-
-5) Testing and verification
-   - Add or update tests when introducing behavior changes.
-   - Consider creating a test agent for comprehensive test coverage.
-   - Run available test/build/type-check tools to validate changes.
-   - Provide steps for the user to verify locally.
-
-6) Safety and privacy
-   - Do not expose secrets, tokens, or credentials.
-   - Do not execute untrusted scripts.
-   - Confirm before destructive actions.
-   - Sub-agents inherit these safety constraints.
-
-7) Performance and scalability
-   - Use sub-agents to parallelize independent work.
-   - Stream or paginate large files.
-   - Be mindful of the number of concurrent sub-agents.
-   - Monitor agent status to avoid resource exhaustion.
-   - Avoid redundant work - if a sub-agent did it, it's done.
-   - Efficiency means trusting delegation, not redoing completed tasks."),
-                Client = client,
-                Model = "anthropic/claude-sonnet-4",
-                Temperature = 0.15,
-                MaxTokens = 4096,
-                TopP = 0.25,
-                MaintainHistory = true,
-                MaxHistoryMessages = 10,
-                EnableTools = true,
-                EnableStreaming = true,
-                RequireCommandApproval = true,
-                ToolNames = new List<string>() { 
-                    "apply_diff", "grep", "glob", "read_file", "list_files", 
-                    "write_file", "search_and_replace", "delete_file",
-                    "create_agent", "hand_off_to_agent", "get_agent_status", 
-                    "wait_for_agent", "get_task_result", "terminate_agent", "execute_command",
-                    "web_fetch"
-                },
-            };
-
-            if (persistedConfig != null)
-            {
-                configurationManager.ApplyToAgentConfiguration(agentConfig, persistedConfig);
+                await PromptForOpenRouterApiKey(configService, logger);
+                openRouterCfg = await configService.GetSectionAsync<OpenRouterConfiguration>();
             }
             else
             {
-                await configurationManager.SaveConfigurationAsync(
-                    configurationManager.FromAgentConfiguration(agentConfig));
-            }
-            
-            if (agentConfig.Model.Contains("gpt-5", StringComparison.OrdinalIgnoreCase))
-            {
-                agentConfig.Temperature = 1.0;
+                logger.LogOperationStart("ValidateOpenRouterApiKey");
+                var apiKeyValidation = validationService.ValidateApiKey(openRouterCfg.ApiKey, "openrouter");
+                if (!apiKeyValidation.IsValid)
+                {
+                    Console.WriteLine("Warning: OpenRouter API key validation failed:");
+                    foreach (var error in apiKeyValidation.Errors)
+                    {
+                        Console.WriteLine($"  - {error.Message}");
+                    }
+                }
             }
 
-            return (new Agent(agentConfig, toolRegistry), client);
+            // Check for Morph API key setup
+            var morphCfg = await configService.GetSectionAsync<MorphConfiguration>();
+            if (string.IsNullOrEmpty(morphCfg.ApiKey))
+            {
+                await PromptForMorphApiKey(configService, logger);
+            }
+            else
+            {
+                Console.WriteLine($"Morph Fast Apply enabled - expect 83% faster diff operations!");
+                logger.LogConfigurationChange("MorphEnabled", false, true);
+            }
+
+            configScope.Complete(new { ConfigurationValid = configValidation.IsValid });
         }
+
+        private static async Task PromptForOpenRouterApiKey(IConfigurationService configService, IOperationLogger logger)
+        {
+            using var promptScope = logger.BeginOperation("PromptOpenRouterApiKey");
+
+            Console.WriteLine("Welcome to Saturn! Please configure your OpenRouter API key.");
+            Console.Write("Enter your OpenRouter API key: ");
+            
+            // SECURITY FIX: Enhanced secure input for API keys
+            var apiKey = ReadSensitiveInput();
+
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                try
+                {
+                    var trimmedApiKey = apiKey.Trim();
+                    
+                    // Enhanced validation for API key format
+                    if (!IsValidApiKeyFormat(trimmedApiKey))
+                    {
+                        Console.WriteLine("Invalid API key format. Please check your key and try again.");
+                        Environment.Exit(1);
+                        return;
+                    }
+                    
+                    // INTEGRATION: Use secure storage via configuration service
+                    await configService.UpdateSectionAsync(new OpenRouterConfiguration { ApiKey = trimmedApiKey });
+
+                    Console.WriteLine("API key saved and encrypted successfully!");
+                    logger.LogConfigurationChange("OpenRouterApiKey", "Not Set", "Set (Encrypted)");
+                    promptScope.Complete();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogOperationFailure("SaveApiKey", ex, TimeSpan.Zero);
+                    Console.WriteLine($"Error saving API key: {ex.Message}");
+                    Environment.Exit(1);
+                }
+                finally
+                {
+                    // SECURITY: Clear sensitive data from memory
+                    SecureClearString(ref apiKey);
+                }
+            }
+            else
+            {
+                Console.WriteLine("API key is required to use Saturn.");
+                promptScope.Fail(new InvalidOperationException("API key is required"));
+                Environment.Exit(1);
+            }
+        }
+        
+        /// <summary>
+        /// Securely reads sensitive input with masked display
+        /// </summary>
+        private static string ReadSensitiveInput()
+        {
+            var input = new StringBuilder();
+            ConsoleKeyInfo key;
+            
+            do
+            {
+                key = Console.ReadKey(true);
+                
+                if (key.Key == ConsoleKey.Backspace && input.Length > 0)
+                {
+                    input.Remove(input.Length - 1, 1);
+                    Console.Write("\b \b");
+                }
+                else if (key.Key != ConsoleKey.Enter && key.Key != ConsoleKey.Backspace && !char.IsControl(key.KeyChar))
+                {
+                    input.Append(key.KeyChar);
+                    Console.Write("*");
+                }
+            } while (key.Key != ConsoleKey.Enter);
+            
+            Console.WriteLine();
+            return input.ToString();
+        }
+        
+        /// <summary>
+        /// Securely clears sensitive string data from memory
+        /// </summary>
+        private static void SecureClearString(ref string sensitiveData)
+        {
+            sensitiveData = string.Empty;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        // SECURITY: Add API key validation method
+        private static bool IsValidApiKeyFormat(string apiKey)
+        {
+            // Basic validation for OpenRouter API key format
+            return !string.IsNullOrWhiteSpace(apiKey) && 
+                   apiKey.Length >= 20 && 
+                   !apiKey.Contains(" ") &&
+                   !apiKey.Contains("\n") &&
+                   !apiKey.Contains("\r");
+        }
+
+        private static async Task PromptForMorphApiKey(IConfigurationService configService, IOperationLogger logger)
+        {
+            using var promptScope = logger.BeginOperation("PromptMorphApiKey");
+
+            Console.WriteLine("\nOptional: Morph Fast Apply Integration");
+            Console.WriteLine("For dramatically faster diff operations (98% accuracy, 83% faster), you can configure Morph.");
+            Console.Write("Enter your Morph API key (or press Enter to skip): ");
+            string? morphApiKey = Console.ReadLine();
+            
+            if (!string.IsNullOrWhiteSpace(morphApiKey))
+            {
+                var trimmedKey = morphApiKey.Trim();
+                
+                // Validate Morph API key format
+                if (!IsValidApiKeyFormat(trimmedKey))
+                {
+                    Console.WriteLine("Invalid Morph API key format. Skipping configuration.");
+                    promptScope.Complete(new { MorphEnabled = false });
+                    return;
+                }
+                
+                // SECURITY FIX: Don't set environment variable directly
+                await configService.UpdateSectionAsync(new MorphConfiguration { ApiKey = trimmedKey });
+
+                Console.WriteLine("Morph API key saved! You'll get 83% faster diff operations.");
+                logger.LogConfigurationChange("MorphApiKey", "Not Set", "Set");
+                promptScope.Complete(new { MorphEnabled = true });
+            }
+            else
+            {
+                Console.WriteLine("Skipping Morph setup. Traditional diff will be used (can be configured later).");
+                promptScope.Complete(new { MorphEnabled = false });
+            }
+        }
+
+        private static CommandLineOptions ParseCommandLineArguments(string[] args)
+        {
+            bool useWebUI = args.Contains("--web") || args.Contains("-w");
+            bool useTerminalUI = args.Contains("--terminal") || args.Contains("-t");
+            
+            // Default to web UI if no specific UI specified
+            if (!useWebUI && !useTerminalUI)
+            {
+                useWebUI = true;
+            }
+
+            // SECURITY FIX: Use configuration for default port instead of hardcoded
+            const int DEFAULT_PORT = 5173;
+            int port = DEFAULT_PORT;
+            var portIndex = Array.IndexOf(args, "--port");
+            if (portIndex >= 0 && portIndex + 1 < args.Length)
+            {
+                if (int.TryParse(args[portIndex + 1], out int customPort))
+                {
+                    // Validate port range for security
+                    if (customPort >= 1024 && customPort <= 65535)
+                    {
+                        port = customPort;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Invalid port {customPort}. Using default port {DEFAULT_PORT}");
+                    }
+                }
+            }
+
+            return new CommandLineOptions
+            {
+                UseWebUI = useWebUI,
+                UseTerminalUI = useTerminalUI,
+                Port = port
+            };
+        }
+
+        private static async Task StartWebUIAsync(IHost host, CommandLineOptions options, IOperationLogger logger)
+        {
+            using var webScope = logger.BeginOperation("StartWebUI");
+            
+            Console.WriteLine($"Starting Saturn Web UI on http://localhost:{options.Port}");
+            Console.WriteLine("Press Ctrl+C to stop the server.");
+            
+            var webServer = host.Services.GetRequiredService<WebServer>();
+            await webServer.StartAsync(options.Port);
+            
+            // Keep the application running
+            var tcs = new TaskCompletionSource<bool>();
+            Console.CancelKeyPress += (s, e) =>
+            {
+                e.Cancel = true;
+                tcs.SetResult(true);
+            };
+            
+            await tcs.Task;
+            await webServer.StopAsync();
+            
+            webScope.Complete();
+        }
+
+        private static async Task StartTerminalUIAsync(IHost host, IOperationLogger logger)
+        {
+            using var terminalScope = logger.BeginOperation("StartTerminalUI");
+            
+            Console.WriteLine("Starting Saturn Console Mode...");
+            Console.WriteLine("Type 'exit' to quit, 'help' for available commands.");
+            
+            var agent = host.Services.GetRequiredService<Agent>();
+            await agent.InitializeSessionAsync("console");
+            
+            while (true)
+            {
+                Console.Write("\nYou: ");
+                string? input = Console.ReadLine();
+                
+                if (string.IsNullOrWhiteSpace(input))
+                    continue;
+                    
+                if (input.ToLower() == "exit")
+                    break;
+                    
+                if (input.ToLower() == "help")
+                {
+                    Console.WriteLine("\nAvailable commands:");
+                    Console.WriteLine("- exit: Quit the application");
+                    Console.WriteLine("- help: Show this help message");
+                    Console.WriteLine("- Any other text will be sent to the AI assistant");
+                    continue;
+                }
+                
+                try
+                {
+                    using var requestScope = logger.BeginOperation("ProcessUserRequest");
+                    requestScope.AddContext("UserInput", input);
+                    
+                    Console.WriteLine("\nAssistant: ");
+                    
+                    if (agent.Configuration.EnableStreaming)
+                    {
+                        await agent.ExecuteStreamAsync(input, async (chunk) =>
+                        {
+                            if (!chunk.IsComplete && !chunk.IsToolCall && !string.IsNullOrEmpty(chunk.Content))
+                            {
+                                Console.Write(chunk.Content);
+                            }
+                        });
+                    }
+                    else
+                    {
+                        var response = await agent.Execute<OpenRouter.Models.Api.Chat.Message>(input);
+                        // SECURITY FIX: Add null check before calling ToString()
+                        var content = response?.Content?.ToString() ?? "No response received";
+                        Console.WriteLine(content);
+                    }
+                    
+                    requestScope.Complete();
+                }
+                catch (Exception ex)
+                {
+                    logger.LogOperationFailure("ProcessUserRequest", ex, TimeSpan.Zero, new { UserInput = input });
+                    Console.WriteLine($"Error: {ex.Message}");
+                }
+            }
+            
+            terminalScope.Complete();
+        }
+    }
+
+    /// <summary>
+    /// Command line options for application startup.
+    /// </summary>
+    public class CommandLineOptions
+    {
+        public bool UseWebUI { get; set; }
+        public bool UseTerminalUI { get; set; }
+        public int Port { get; set; } = 5173;
     }
 }

@@ -116,92 +116,85 @@ Important: The context line (@@ ... @@) must be unique in the file!";
         }
         
         private const long MaxFileSize = 100 * 1024 * 1024;
-        private static readonly HashSet<string> FileLocks = new HashSet<string>();
-        
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> FileLocks = new System.Collections.Concurrent.ConcurrentDictionary<string, object>();
+
         public override async Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
         {
             var patchText = GetParameter<string>(parameters, "patchText");
             var dryRun = GetParameter<bool>(parameters, "dryRun", false);
-            
+
             if (string.IsNullOrEmpty(patchText))
             {
                 return CreateErrorResult("Patch text cannot be empty");
             }
-            
+
             try
             {
                 var filesNeeded = IdentifyFilesNeeded(patchText);
                 var filesToAdd = IdentifyFilesAdded(patchText);
-                
+
                 await ValidateFilesForReading(filesNeeded);
                 await ValidateFilesForAdding(filesToAdd);
-                
+
                 var currentFiles = await LoadCurrentFiles(filesNeeded);
 
                 var operations = ParsePatchText(patchText, currentFiles);
-                
+
                 var allFiles = filesNeeded.Union(filesToAdd).ToList();
                 var lockedFiles = new List<string>();
-                
+
                 try
                 {
                     foreach (var file in allFiles)
                     {
                         var absPath = Path.GetFullPath(file);
-                        lock (FileLocks)
+                        if (!FileLocks.TryAdd(absPath, null))
                         {
-                            if (FileLocks.Contains(absPath))
-                            {
-                                return CreateErrorResult($"File is currently being modified by another operation: {file}");
-                            }
-                            FileLocks.Add(absPath);
-                            lockedFiles.Add(absPath);
+                            return CreateErrorResult($"File is currently being modified by another operation: {file}");
                         }
+                        lockedFiles.Add(absPath);
                     }
-                    
+
                     var commit = ConvertToCommit(operations, currentFiles);
-                
-                var stats = CalculateStatistics(commit);
-                
-                if (dryRun)
-                {
-                    var dryRunResult = new
+
+                    var stats = CalculateStatistics(commit);
+
+                    if (dryRun)
                     {
-                        DryRun = true,
+                        var dryRunResult = new
+                        {
+                            DryRun = true,
+                            ChangedFiles = stats.ChangedFiles,
+                            TotalAdditions = stats.Additions,
+                            TotalRemovals = stats.Removals,
+                            FileCount = stats.ChangedFiles.Count,
+                            Operations = operations.Select(op => new { op.Type, op.FilePath }).ToList()
+                        };
+
+                        var dryRunOutput = $"[DRY RUN] Patch validation successful. Would change {stats.ChangedFiles.Count} files, {stats.Additions} additions, {stats.Removals} removals";
+
+                        return CreateSuccessResult(dryRunResult, dryRunOutput);
+                    }
+
+                    await ApplyCommit(commit);
+
+                    var result = new
+                    {
                         ChangedFiles = stats.ChangedFiles,
                         TotalAdditions = stats.Additions,
                         TotalRemovals = stats.Removals,
-                        FileCount = stats.ChangedFiles.Count,
-                        Operations = operations.Select(op => new { op.Type, op.FilePath }).ToList()
+                        FileCount = stats.ChangedFiles.Count
                     };
-                    
-                    var dryRunOutput = $"[DRY RUN] Patch validation successful. Would change {stats.ChangedFiles.Count} files, {stats.Additions} additions, {stats.Removals} removals";
-                    
-                    return CreateSuccessResult(dryRunResult, dryRunOutput);
-                }
-                
-                await ApplyCommit(commit);
-                
-                var result = new
-                {
-                    ChangedFiles = stats.ChangedFiles,
-                    TotalAdditions = stats.Additions,
-                    TotalRemovals = stats.Removals,
-                    FileCount = stats.ChangedFiles.Count
-                };
-                
-                var formattedOutput = $"Patch applied successfully. {stats.ChangedFiles.Count} files changed, {stats.Additions} additions, {stats.Removals} removals";
-                
+
+                    var formattedOutput = $"Patch applied successfully. {stats.ChangedFiles.Count} files changed, {stats.Additions} additions, {stats.Removals} removals";
+
                     return CreateSuccessResult(result, formattedOutput);
                 }
                 finally
                 {
-                    lock (FileLocks)
+                    foreach (var file in lockedFiles)
                     {
-                        foreach (var file in lockedFiles)
-                        {
-                            FileLocks.Remove(file);
-                        }
+                        FileLocks.TryRemove(file, out _);
                     }
                 }
             }
@@ -655,25 +648,18 @@ Important: The context line (@@ ... @@) must be unique in the file!";
             {
                 throw new ArgumentException("File path cannot be null or empty");
             }
-            
-            if (filePath.Contains("..") || filePath.Contains("~"))
+
+            var fullPath = Path.GetFullPath(filePath);
+            var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
+
+            if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
             {
-                throw new SecurityException($"Invalid file path: {filePath}. Path traversal attempts are not allowed.");
+                throw new SecurityException($"Access denied: Path '{filePath}' is outside the working directory.");
             }
-            
-            try
+
+            if (filePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             {
-                var fullPath = Path.GetFullPath(filePath);
-                var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
-                
-                if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new SecurityException($"Access denied: Path '{filePath}' is outside the working directory.");
-                }
-            }
-            catch (Exception ex) when (!(ex is SecurityException))
-            {
-                throw new ArgumentException($"Invalid file path: {filePath}", ex);
+                throw new ArgumentException($"File path contains invalid characters: {filePath}");
             }
         }
         

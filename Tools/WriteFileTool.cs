@@ -187,20 +187,18 @@ Safety features:
             {
                 throw new ArgumentException("Path cannot be null or empty");
             }
-            
+
             var fullPath = Path.GetFullPath(path);
             var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
-            
+
             if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
             {
                 throw new SecurityException($"Access denied: Path '{path}' is outside the working directory");
             }
-            
-            var invalidChars = Path.GetInvalidFileNameChars();
-            var fileName = Path.GetFileName(fullPath);
-            if (fileName.IndexOfAny(invalidChars) >= 0)
+
+            if (path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             {
-                throw new ArgumentException($"File name contains invalid characters: {fileName}");
+                throw new ArgumentException($"File path contains invalid characters: {path}");
             }
         }
         

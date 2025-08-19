@@ -11,13 +11,15 @@ using Saturn.Tools.Core;
 
 namespace Saturn.Tools
 {
-    public class ExecuteCommandTool : ToolBase
+    public class ExecuteCommandTool : ToolBase, IDisposable
     {
         private const int DefaultTimeoutSeconds = 30;
         private const int MaxOutputLength = 1048576; // 1MB
         private readonly List<CommandHistory> _commandHistory = new();
         private readonly CommandExecutorConfig _config;
         private readonly ICommandApprovalService _approvalService;
+        private readonly object _historyLock = new object();
+        private bool _disposed = false;
 
         public ExecuteCommandTool() : this(new CommandExecutorConfig(), null!) { }
 
@@ -83,6 +85,11 @@ namespace Saturn.Tools
 
         public override async Task<ToolResult> ExecuteAsync(Dictionary<string, object> arguments)
         {
+            if (_disposed)
+            {
+                return CreateErrorResult("ExecuteCommandTool has been disposed");
+            }
+
             try
             {
                 var command = GetParameter<string>(arguments, "command");
@@ -96,9 +103,15 @@ namespace Saturn.Tools
                 var captureOutput = GetParameter<bool>(arguments, "captureOutput", true);
                 var runAsShell = GetParameter<bool>(arguments, "runAsShell", true);
 
+                // STABILITY FIX: Add validation for timeout and working directory
+                if (timeoutSeconds <= 0 || timeoutSeconds > 3600) // Max 1 hour
+                {
+                    return CreateErrorResult("Timeout must be between 1 and 3600 seconds");
+                }
+
                 if (AgentContext.RequireCommandApproval)
                 {
-                    var approved = await _approvalService.RequestApprovalAsync(command, workingDirectory);
+                    var approved = await _approvalService.RequestApprovalAsync(command, workingDirectory).ConfigureAwait(false);
                     if (!approved)
                     {
                         return CreateErrorResult("Command execution denied by user");
@@ -126,6 +139,9 @@ namespace Saturn.Tools
                     ExecutedAt = DateTime.UtcNow
                 };
 
+                // STABILITY FIX: Use proper cancellation token support
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds + 5)); // Add buffer
+                
                 try
                 {
                     var result = await ExecuteCommandAsync(
@@ -134,22 +150,41 @@ namespace Saturn.Tools
                         TimeSpan.FromSeconds(timeoutSeconds),
                         captureOutput,
                         runAsShell,
-                        CancellationToken.None);
+                        cts.Token).ConfigureAwait(false);
 
                     historyEntry.ExitCode = result.ExitCode;
                     historyEntry.Duration = result.Duration;
                     historyEntry.Success = result.ExitCode == 0;
 
+                    // STABILITY FIX: Thread-safe history management
                     if (_config.EnableHistory)
                     {
-                        _commandHistory.Add(historyEntry);
-                        if (_commandHistory.Count > _config.MaxHistorySize)
+                        lock (_historyLock)
                         {
-                            _commandHistory.RemoveAt(0);
+                            _commandHistory.Add(historyEntry);
+                            if (_commandHistory.Count > _config.MaxHistorySize)
+                            {
+                                _commandHistory.RemoveAt(0);
+                            }
                         }
                     }
 
                     return FormatResult(result);
+                }
+                catch (OperationCanceledException)
+                {
+                    historyEntry.Success = false;
+                    historyEntry.Error = "Command execution was cancelled or timed out";
+                    
+                    if (_config.EnableHistory)
+                    {
+                        lock (_historyLock)
+                        {
+                            _commandHistory.Add(historyEntry);
+                        }
+                    }
+
+                    return CreateErrorResult("Command execution was cancelled or timed out");
                 }
                 catch (Exception ex)
                 {
@@ -158,7 +193,10 @@ namespace Saturn.Tools
                     
                     if (_config.EnableHistory)
                     {
-                        _commandHistory.Add(historyEntry);
+                        lock (_historyLock)
+                        {
+                            _commandHistory.Add(historyEntry);
+                        }
                     }
 
                     throw;
@@ -308,6 +346,14 @@ namespace Saturn.Tools
                 return new CommandValidationResult { IsValid = false, Reason = "Command cannot be empty" };
             }
 
+            var validator = new CommandValidator(_config.SecurityMode);
+            var validationResult = validator.Validate(command);
+
+            if (!validationResult.IsValid)
+            {
+                return validationResult;
+            }
+
             if (_config.CustomValidator != null)
             {
                 return _config.CustomValidator(command);
@@ -351,14 +397,48 @@ namespace Saturn.Tools
             return output.Substring(0, MaxOutputLength) + "\n\n... (output truncated)";
         }
 
-        public IReadOnlyList<CommandHistory> GetCommandHistory() => _commandHistory.AsReadOnly();
+        public IReadOnlyList<CommandHistory> GetCommandHistory()
+        {
+            lock (_historyLock)
+            {
+                return _commandHistory.AsReadOnly();
+            }
+        }
 
-        public void ClearHistory() => _commandHistory.Clear();
+        public void ClearHistory()
+        {
+            lock (_historyLock)
+            {
+                _commandHistory.Clear();
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    // Dispose managed resources
+                    lock (_historyLock)
+                    {
+                        _commandHistory.Clear();
+                    }
+                }
+                _disposed = true;
+            }
+        }
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
     }
 
     public class CommandExecutorConfig
     {
-        public SecurityMode SecurityMode { get; set; } = SecurityMode.Unrestricted;
+        public SecurityMode SecurityMode { get; set; } = SecurityMode.Restricted;
         public int DefaultTimeout { get; set; } = 30;
         public bool EnableHistory { get; set; } = true;
         public int MaxHistorySize { get; set; } = 100;
@@ -397,5 +477,173 @@ namespace Saturn.Tools
         public TimeSpan? Duration { get; set; }
         public bool Success { get; set; }
         public string? Error { get; set; }
+    }
+
+    public class CommandValidator
+    {
+        private readonly SecurityMode _securityMode;
+        
+        // SECURITY FIX: Use allowlist instead of blacklist for commands
+        private static readonly HashSet<string> AllowedCommands = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // Version control
+            "git", "svn", "hg",
+            
+            // File operations (safe subset)
+            "ls", "dir", "cat", "type", "head", "tail", "find", "grep", "sort", "wc",
+            
+            // Development tools
+            "dotnet", "npm", "node", "python", "pip", "mvn", "gradle", "cargo", "rustc",
+            "gcc", "clang", "make", "cmake", "msbuild",
+            
+            // Text processing
+            "echo", "printf", "sed", "awk", "cut", "tr", "uniq",
+            
+            // System info (safe)
+            "whoami", "pwd", "date", "uptime", "uname", "hostname",
+            
+            // Package managers (safe operations)
+            "apt", "yum", "brew", "choco", "winget",
+            
+            // Docker (if needed)
+            "docker", "docker-compose",
+            
+            // Basic utilities
+            "curl", "wget", "ping", "traceroute", "nslookup", "dig"
+        };
+
+        // Completely blocked commands - always dangerous
+        private static readonly HashSet<string> AlwaysBlockedCommands = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // File system destruction
+            "rm", "rmdir", "del", "rd", "format", "fdisk", "mkfs", "dd",
+            
+            // System control
+            "sudo", "su", "runas", "shutdown", "reboot", "halt", "poweroff",
+            "systemctl", "service", "sc", "net",
+            
+            // Process control
+            "kill", "killall", "pkill", "taskkill", "pskill",
+            
+            // Permission changes
+            "chmod", "chown", "chgrp", "icacls", "attrib",
+            
+            // Network/security
+            "iptables", "netsh", "route", "ifconfig", "ip",
+            
+            // Package installation (can be dangerous)
+            "rpm", "dpkg", "pacman",
+            
+            // Disk operations
+            "mount", "umount", "fsck", "partprobe"
+        };
+
+        // Dangerous argument patterns
+        private static readonly string[] DangerousPatterns =
+        {
+            "--force", "-f", "--recursive", "-r", "--all", "-a",
+            "/f", "/s", "/q", "/y",  // Windows force flags
+            "$(", "`", "&&", "||", ";", "|",  // Command injection patterns
+            "..", "~", "$HOME", "%USERPROFILE%"  // Path traversal
+        };
+
+        private static readonly char[] CommandSeparators = { ';', '&', '|', '\n', '\r' };
+
+        public CommandValidator(SecurityMode securityMode)
+        {
+            _securityMode = securityMode;
+        }
+
+        public CommandValidationResult Validate(string command)
+        {
+            if (_securityMode == SecurityMode.Unrestricted)
+            {
+                return new CommandValidationResult { IsValid = true };
+            }
+
+            // Check for always blocked commands first
+            var result = ValidateNotAlwaysBlocked(command);
+            if (!result.IsValid)
+            {
+                return result;
+            }
+
+            // Split and validate each command in chain
+            var commands = command.Split(CommandSeparators, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var cmd in commands)
+            {
+                var validationResult = ValidateSingleCommand(cmd.Trim());
+                if (!validationResult.IsValid)
+                {
+                    return validationResult;
+                }
+            }
+
+            return new CommandValidationResult { IsValid = true };
+        }
+
+        private CommandValidationResult ValidateNotAlwaysBlocked(string command)
+        {
+            var lowerCommand = command.ToLowerInvariant();
+            foreach (var blocked in AlwaysBlockedCommands)
+            {
+                if (lowerCommand.Contains(blocked.ToLowerInvariant()))
+                {
+                    return new CommandValidationResult
+                    {
+                        IsValid = false,
+                        Reason = $"Command contains always-blocked command '{blocked}'"
+                    };
+                }
+            }
+            return new CommandValidationResult { IsValid = true };
+        }
+
+        private CommandValidationResult ValidateSingleCommand(string command)
+        {
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                return new CommandValidationResult { IsValid = false, Reason = "Empty command" };
+            }
+
+            var commandParts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (commandParts.Length == 0)
+            {
+                return new CommandValidationResult { IsValid = false, Reason = "No command specified" };
+            }
+
+            var commandName = commandParts[0].ToLowerInvariant();
+            
+            // Remove path separators from command name for validation
+            var baseCommand = Path.GetFileName(commandName);
+
+            // SECURITY: Use allowlist - only allow explicitly permitted commands
+            if (!AllowedCommands.Contains(baseCommand))
+            {
+                return new CommandValidationResult
+                {
+                    IsValid = false,
+                    Reason = $"Command '{baseCommand}' is not in the allowed commands list"
+                };
+            }
+
+            // Check for dangerous argument patterns
+            if (_securityMode == SecurityMode.Strict)
+            {
+                foreach (var pattern in DangerousPatterns)
+                {
+                    if (command.Contains(pattern, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new CommandValidationResult
+                        {
+                            IsValid = false,
+                            Reason = $"Command contains dangerous pattern '{pattern}'"
+                        };
+                    }
+                }
+            }
+
+            return new CommandValidationResult { IsValid = true };
+        }
     }
 }

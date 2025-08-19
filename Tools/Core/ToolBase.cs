@@ -34,7 +34,19 @@ namespace Saturn.Tools.Core
                 {
                     return typedValue;
                 }
-                
+
+                if (value is JsonElement jsonElement)
+                {
+                    try
+                    {
+                        return jsonElement.Deserialize<T>() ?? defaultValue;
+                    }
+                    catch
+                    {
+                        return defaultValue;
+                    }
+                }
+
                 try
                 {
                     return (T)Convert.ChangeType(value, typeof(T));
@@ -44,7 +56,7 @@ namespace Saturn.Tools.Core
                     return defaultValue;
                 }
             }
-            
+
             return defaultValue;
         }
         

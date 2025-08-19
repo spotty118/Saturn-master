@@ -211,9 +211,9 @@ namespace Saturn.OpenRouter.Http
                     ? null
                     : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.Error.WriteLine($"[HttpClientAdapter] Failed to read error response content from OpenRouter API (Status: {(int)status} {response.ReasonPhrase}): {ex.GetType().Name}: {ex.Message}");
+                // Suppress the exception to avoid logging sensitive information
             }
 
             try
@@ -260,9 +260,9 @@ namespace Saturn.OpenRouter.Http
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Console.Error.WriteLine($"[HttpClientAdapter] Failed to deserialize OpenRouter error response (Status: {(int)status} {response.ReasonPhrase}): {ex.GetType().Name}: {ex.Message}");
+                // Suppress the exception to avoid logging sensitive information
             }
 
             var generic = $"Request failed with status {(int)status} {response.ReasonPhrase}.";
