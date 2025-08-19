@@ -144,6 +144,13 @@ namespace Saturn.Core.Extensions
                 return new ParallelExecutor(maxConcurrency);
             });
 
+            // System metrics tool for monitoring multi-threading performance
+            services.AddTransient<SystemMetricsTool>(provider =>
+            {
+                var parallelExecutor = provider.GetService<ParallelExecutor>();
+                return new SystemMetricsTool(parallelExecutor);
+            });
+
             return services;
         }
 

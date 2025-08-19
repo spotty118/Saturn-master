@@ -264,47 +264,113 @@ Examples
                 
                 if (!filesOnly)
                 {
-                    foreach (var dir in directoryInfo.EnumerateDirectories())
+                    var directories = directoryInfo.EnumerateDirectories().ToArray();
+
+                    // PERFORMANCE: Parallel directory processing for large directory trees
+                    if (recursive && directories.Length > 10) // Only parallelize for larger directory sets
                     {
-                        try
+                        var maxConcurrency = Math.Min(Environment.ProcessorCount, directories.Length);
+                        var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+                        var allItems = new ConcurrentBag<FileSystemItem>();
+
+                        var tasks = directories.Select(async dir =>
                         {
-                            if (!includeHidden && IsHidden(dir))
-                                continue;
-                            
-                            if (pattern != null && !MatchesPattern(dir.Name, pattern))
-                                continue;
-                            
-                            var item = new FileSystemItem
+                            await semaphore.WaitAsync();
+                            try
                             {
-                                Name = dir.Name,
-                                FullPath = dir.FullName,
-                                RelativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), dir.FullName),
-                                IsDirectory = true,
-                                Size = 0,
-                                CreatedDate = dir.CreationTimeUtc,
-                                ModifiedDate = dir.LastWriteTimeUtc,
-                                Attributes = dir.Attributes,
-                                Depth = currentDepth
-                            };
-                            
-                            items.Add(item);
-                            
-                            if (recursive)
-                            {
+                                if (!includeHidden && IsHidden(dir))
+                                    return;
+
+                                if (pattern != null && !MatchesPattern(dir.Name, pattern))
+                                    return;
+
+                                var item = new FileSystemItem
+                                {
+                                    Name = dir.Name,
+                                    FullPath = dir.FullName,
+                                    RelativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), dir.FullName),
+                                    IsDirectory = true,
+                                    Size = 0,
+                                    CreatedDate = dir.CreationTimeUtc,
+                                    ModifiedDate = dir.LastWriteTimeUtc,
+                                    Attributes = dir.Attributes,
+                                    Depth = currentDepth
+                                };
+
+                                allItems.Add(item);
+
                                 var subItems = await EnumerateDirectoryAsync(
-                                    dir.FullName, 
-                                    pattern ?? "*", 
-                                    recursive, 
-                                    includeHidden, 
-                                    maxDepth, 
-                                    currentDepth + 1, 
+                                    dir.FullName,
+                                    pattern ?? "*",
+                                    recursive,
+                                    includeHidden,
+                                    maxDepth,
+                                    currentDepth + 1,
                                     visitedPaths,
                                     filesOnly,
                                     directoriesOnly
                                 );
-                                items.AddRange(subItems);
+
+                                foreach (var subItem in subItems)
+                                {
+                                    allItems.Add(subItem);
+                                }
                             }
-                        }
+                            finally
+                            {
+                                semaphore.Release();
+                            }
+                        });
+
+                        await Task.WhenAll(tasks);
+                        semaphore.Dispose();
+
+                        items.AddRange(allItems);
+                    }
+                    else
+                    {
+                        // Sequential processing for smaller directory sets
+                        foreach (var dir in directories)
+                        {
+                            try
+                            {
+                                if (!includeHidden && IsHidden(dir))
+                                    continue;
+
+                                if (pattern != null && !MatchesPattern(dir.Name, pattern))
+                                    continue;
+
+                                var item = new FileSystemItem
+                                {
+                                    Name = dir.Name,
+                                    FullPath = dir.FullName,
+                                    RelativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), dir.FullName),
+                                    IsDirectory = true,
+                                    Size = 0,
+                                    CreatedDate = dir.CreationTimeUtc,
+                                    ModifiedDate = dir.LastWriteTimeUtc,
+                                    Attributes = dir.Attributes,
+                                    Depth = currentDepth
+                                };
+
+                                items.Add(item);
+
+                                if (recursive)
+                                {
+                                    var subItems = await EnumerateDirectoryAsync(
+                                        dir.FullName,
+                                        pattern ?? "*",
+                                        recursive,
+                                        includeHidden,
+                                        maxDepth,
+                                        currentDepth + 1,
+                                        visitedPaths,
+                                        filesOnly,
+                                        directoriesOnly
+                                    );
+                                    items.AddRange(subItems);
+                                }
+                            }
                         catch (UnauthorizedAccessException)
                         {
                             items.Add(CreateErrorItem(dir.Name, dir.FullName, "Access Denied", currentDepth));

@@ -236,20 +236,37 @@ Safety features:
             {
                 ProcessedFiles = new List<FileResult>()
             };
-            
-            foreach (var file in files)
+
+            // PERFORMANCE: Parallel file processing for multi-core utilization
+            var maxConcurrency = Math.Min(Environment.ProcessorCount * 2, files.Count);
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var processedFiles = new ConcurrentBag<FileResult>();
+
+            var tasks = files.Select(async file =>
             {
-                var fileResult = await ProcessSingleFile(file, searchRegex, replacement, dryRun);
-                if (fileResult.MatchCount > 0)
+                await semaphore.WaitAsync();
+                try
                 {
-                    results.ProcessedFiles.Add(fileResult);
+                    var fileResult = await ProcessSingleFile(file, searchRegex, replacement, dryRun);
+                    if (fileResult.MatchCount > 0)
+                    {
+                        processedFiles.Add(fileResult);
+                    }
                 }
-            }
-            
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+            semaphore.Dispose();
+
+            results.ProcessedFiles = processedFiles.ToList();
             results.TotalFiles = results.ProcessedFiles.Count;
             results.TotalMatches = results.ProcessedFiles.Sum(f => f.MatchCount);
             results.TotalReplacements = results.ProcessedFiles.Sum(f => f.ReplacementCount);
-            
+
             return results;
         }
         

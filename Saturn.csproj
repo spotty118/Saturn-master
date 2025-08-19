@@ -6,6 +6,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PublishAot>false</PublishAot>
+    <Version>1.0.0-beta</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <PackageId>SaturnAgent</PackageId>
+    <Title>Saturn AI Agent Framework</Title>
+    <Description>Advanced AI agent framework with multi-threading, security hardening, and modern UI/UX</Description>
+    <Authors>Saturn Development Team</Authors>
+    <Company>Saturn AI</Company>
+    <Product>Saturn AI Agent Framework</Product>
+    <Copyright>Copyright © 2024 Saturn AI</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

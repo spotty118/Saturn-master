@@ -129,13 +129,8 @@ Examples:
                 var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
                 var files = Directory.GetFiles(path, filePattern, searchOption);
 
-                foreach (var file in files)
-                {
-                    if (results.Count >= maxResults)
-                        break;
-
-                    await SearchFileAsync(file, regex, results, maxResults - results.Count);
-                }
+                // PERFORMANCE: Parallel file searching for multi-core utilization
+                await SearchFilesParallelAsync(files, regex, results, maxResults);
             }
             
             return FormatResults(results);
@@ -197,6 +192,53 @@ Examples:
             }
             
             return CreateSuccessResult(results, string.Join(Environment.NewLine, lines));
+        }
+
+        private async Task SearchFilesParallelAsync(string[] files, Regex regex, List<GrepResult> results, int maxResults)
+        {
+            var maxConcurrency = Math.Min(Environment.ProcessorCount * 2, files.Length);
+            var semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+            var allResults = new ConcurrentBag<GrepResult>();
+            var resultCount = 0;
+
+            var tasks = files.Select(async file =>
+            {
+                if (Interlocked.Read(ref resultCount) >= maxResults)
+                    return;
+
+                await semaphore.WaitAsync();
+                try
+                {
+                    var fileResults = new List<GrepResult>();
+                    await SearchFileAsync(file, regex, fileResults, maxResults);
+
+                    foreach (var result in fileResults)
+                    {
+                        if (Interlocked.Increment(ref resultCount) <= maxResults)
+                        {
+                            allResults.Add(result);
+                        }
+                        else
+                        {
+                            Interlocked.Decrement(ref resultCount);
+                            break;
+                        }
+                    }
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
+
+            await Task.WhenAll(tasks);
+            semaphore.Dispose();
+
+            // Add results in a thread-safe manner
+            foreach (var result in allResults.Take(maxResults))
+            {
+                results.Add(result);
+            }
         }
 
         private async Task SearchFileAsync(string filePath, Regex regex, List<GrepResult> results, int maxResults)
