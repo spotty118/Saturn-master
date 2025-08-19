@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -12,18 +13,29 @@ using Saturn.OpenRouter.Models.Api.Chat;
 
 namespace Saturn.Data;
 
-public class ChatHistoryRepository : IChatHistoryRepository
+public class ChatHistoryRepository : IDisposable
 {
     private readonly string _connectionString;
     private readonly string _dbPath;
     private readonly ILogger<ChatHistoryRepository> _logger;
     private bool _disposed = false;
     private readonly object _connectionLock = new object();
-    private SqliteConnection? _sharedConnection;
+    private readonly ConcurrentQueue<SqliteConnection> _connectionPool;
+    private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly int _maxPoolSize;
+    private readonly int _minPoolSize;
+    private volatile int _currentPoolSize;
+    private readonly Timer _poolMaintenanceTimer;
 
     public ChatHistoryRepository(string? workspacePath = null, ILogger<ChatHistoryRepository>? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ChatHistoryRepository>.Instance;
+
+        // Initialize connection pool settings
+        _maxPoolSize = Math.Max(Environment.ProcessorCount, 4);
+        _minPoolSize = 2;
+        _connectionPool = new ConcurrentQueue<SqliteConnection>();
+        _connectionSemaphore = new SemaphoreSlim(_maxPoolSize, _maxPoolSize);
 
         var saturnDir = workspacePath != null
             ? Path.Combine(workspacePath, ".saturn")
@@ -40,11 +52,132 @@ public class ChatHistoryRepository : IChatHistoryRepository
         var connectionStringBuilder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
         {
             DataSource = _dbPath,
-            Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate
+            Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate,
+            Cache = Microsoft.Data.Sqlite.SqliteCacheMode.Shared,
+            Pooling = true
         };
         _connectionString = connectionStringBuilder.ConnectionString;
 
         InitializeDatabase();
+        InitializeConnectionPool();
+        
+        // Set up periodic pool maintenance
+        _poolMaintenanceTimer = new Timer(MaintainConnectionPool, null, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(5));
+    }
+
+    private void InitializeConnectionPool()
+    {
+        // Pre-populate pool with minimum connections
+        for (int i = 0; i < _minPoolSize; i++)
+        {
+            var connection = CreateConnection();
+            _connectionPool.Enqueue(connection);
+            Interlocked.Increment(ref _currentPoolSize);
+        }
+        
+        _logger.LogDebug("Initialized connection pool with {MinPoolSize} connections", _minPoolSize);
+    }
+
+    private SqliteConnection CreateConnection()
+    {
+        var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        
+        // Optimize SQLite settings for performance
+        using (var cmd = new SqliteCommand("PRAGMA journal_mode = WAL;", connection))
+            cmd.ExecuteNonQuery();
+        using (var cmd = new SqliteCommand("PRAGMA synchronous = NORMAL;", connection))
+            cmd.ExecuteNonQuery();
+        using (var cmd = new SqliteCommand("PRAGMA cache_size = 10000;", connection))
+            cmd.ExecuteNonQuery();
+        using (var cmd = new SqliteCommand("PRAGMA temp_store = MEMORY;", connection))
+            cmd.ExecuteNonQuery();
+        using (var cmd = new SqliteCommand("PRAGMA foreign_keys = ON;", connection))
+            cmd.ExecuteNonQuery();
+            
+        return connection;
+    }
+
+    private async Task<SqliteConnection> GetConnectionAsync()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ChatHistoryRepository));
+
+        await _connectionSemaphore.WaitAsync();
+
+        if (_connectionPool.TryDequeue(out var connection))
+        {
+            try
+            {
+                // Test connection is still valid
+                if (connection.State != System.Data.ConnectionState.Open)
+                {
+                    connection.Dispose();
+                    connection = CreateConnection();
+                }
+                return connection;
+            }
+            catch
+            {
+                connection?.Dispose();
+                connection = CreateConnection();
+                return connection;
+            }
+        }
+
+        // Create new connection if pool is empty
+        return CreateConnection();
+    }
+
+    private void ReturnConnection(SqliteConnection connection)
+    {
+        try
+        {
+            if (_disposed || connection?.State != System.Data.ConnectionState.Open)
+            {
+                connection?.Dispose();
+                return;
+            }
+
+            if (_currentPoolSize < _maxPoolSize)
+            {
+                _connectionPool.Enqueue(connection);
+            }
+            else
+            {
+                connection.Dispose();
+                Interlocked.Decrement(ref _currentPoolSize);
+            }
+        }
+        finally
+        {
+            _connectionSemaphore.Release();
+        }
+    }
+
+    private void MaintainConnectionPool(object? state)
+    {
+        try
+        {
+            // Remove idle connections beyond minimum
+            while (_currentPoolSize > _minPoolSize && _connectionPool.TryDequeue(out var connection))
+            {
+                connection.Dispose();
+                Interlocked.Decrement(ref _currentPoolSize);
+            }
+
+            // Ensure minimum connections are available
+            while (_currentPoolSize < _minPoolSize)
+            {
+                var connection = CreateConnection();
+                _connectionPool.Enqueue(connection);
+                Interlocked.Increment(ref _currentPoolSize);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error during connection pool maintenance");
+        }
     }
 
     private void InitializeDatabase()

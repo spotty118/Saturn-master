@@ -13,14 +13,16 @@ using System.Linq;
 
 namespace Saturn.Web
 {
-    public class WebServer
+    public class WebServer : IDisposable
     {
         private readonly Agent _agent;
         private readonly ToolRegistry _toolRegistry;
         private readonly SettingsManager _settingsManager;
         private readonly IConfigurationService _configurationService;
         private readonly ILogger<WebServer> _logger;
+        private readonly CancellationTokenSource _shutdownTokenSource;
         private WebApplication? _app;
+        private volatile bool _disposed;
 
         public WebServer(Agent agent, ToolRegistry toolRegistry, SettingsManager settingsManager, IConfigurationService configurationService, ILogger<WebServer> logger)
         {
@@ -29,11 +31,20 @@ namespace Saturn.Web
             _settingsManager = settingsManager;
             _configurationService = configurationService;
             _logger = logger;
+            _shutdownTokenSource = new CancellationTokenSource();
         }
 
         public async Task StartAsync(int port = 5173)
         {
+            if (_disposed) throw new ObjectDisposedException(nameof(WebServer));
+            
             var builder = WebApplication.CreateBuilder();
+            
+            // Configure graceful shutdown
+            builder.Services.Configure<HostOptions>(options =>
+            {
+                options.ShutdownTimeout = TimeSpan.FromSeconds(30);
+            });
 
             // Load centralized configuration
             var config = await _configurationService.GetConfigurationAsync();
@@ -72,6 +83,14 @@ namespace Saturn.Web
             builder.Services.AddSingleton(_settingsManager);
 
             _app = builder.Build();
+
+            // Configure graceful shutdown handling
+            var lifetime = _app.Services.GetRequiredService<IHostApplicationLifetime>();
+            lifetime.ApplicationStopping.Register(() =>
+            {
+                _logger.LogInformation("WebServer is shutting down gracefully...");
+                _shutdownTokenSource.Cancel();
+            });
 
             // Use CORS if enabled
             if (config.Web.EnableCors)
@@ -114,16 +133,59 @@ namespace Saturn.Web
                 }
             }
 
-            await _app.StartAsync();
+            await _app.StartAsync(_shutdownTokenSource.Token);
             _logger.LogInformation("Web UI available at {Urls}", string.Join(", ", _app.Urls));
         }
 
         public async Task StopAsync()
         {
-            if (_app != null)
+            if (_disposed) return;
+            
+            try
             {
-                await _app.StopAsync();
-                await _app.DisposeAsync();
+                _logger.LogInformation("Initiating graceful shutdown...");
+                
+                if (!_shutdownTokenSource.IsCancellationRequested)
+                {
+                    _shutdownTokenSource.Cancel();
+                }
+
+                if (_app != null)
+                {
+                    using var shutdownTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    await _app.StopAsync(shutdownTimeout.Token);
+                    await _app.DisposeAsync();
+                    _app = null;
+                }
+                
+                _logger.LogInformation("Graceful shutdown completed");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during graceful shutdown");
+                throw;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            _disposed = true;
+            
+            try
+            {
+                if (!_shutdownTokenSource.IsCancellationRequested)
+                {
+                    _shutdownTokenSource.Cancel();
+                }
+                
+                _app?.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5));
+                _shutdownTokenSource.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during WebServer disposal");
             }
         }
 

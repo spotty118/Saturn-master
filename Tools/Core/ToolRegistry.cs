@@ -3,26 +3,48 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Saturn.OpenRouter.Models.Api.Chat;
 using Saturn.Agents.Tools.Core;
 using Saturn.Agents.MultiAgent;
 
 namespace Saturn.Tools.Core
 {
-    public class ToolRegistry
+    /// <summary>
+    /// Registry for discovering and managing tools using reflection and dependency injection.
+    /// Automatically discovers all ITool implementations and makes them available for use.
+    /// Enhanced with caching for improved performance.
+    /// </summary>
+    public class ToolRegistry : IDisposable
     {
-        private readonly ConcurrentDictionary<string, ITool> _tools = new ConcurrentDictionary<string, ITool>(StringComparer.OrdinalIgnoreCase);
+        private readonly IServiceProvider _serviceProvider;
+        private readonly ILogger<ToolRegistry> _logger;
+        private readonly ConcurrentDictionary<string, Type> _toolTypes;
+        private readonly ConcurrentDictionary<string, ITool> _toolInstances;
+        private readonly ConcurrentDictionary<Type, object[]> _parametersCache;
+        private readonly ConcurrentDictionary<Type, string[]> _toolDefinitionsCache;
         private readonly AgentManager agentManager;
         private readonly object _registrationLock = new object();
-        
-        public ToolRegistry(AgentManager agentManager)
+        private volatile bool _disposed;
+
+        public ToolRegistry(IServiceProvider serviceProvider, ILogger<ToolRegistry> logger, AgentManager agentManager)
         {
-            this.agentManager = agentManager ?? throw new ArgumentNullException(nameof(agentManager));
-            AutoRegisterTools();
+            _serviceProvider = serviceProvider;
+            _logger = logger;
+            _toolTypes = new ConcurrentDictionary<string, Type>();
+            _toolInstances = new ConcurrentDictionary<string, ITool>();
+            _parametersCache = new ConcurrentDictionary<Type, object[]>();
+            _toolDefinitionsCache = new ConcurrentDictionary<Type, string[]>();
+            this.agentManager = agentManager;
+            
+            DiscoverTools();
         }
         
-        private void AutoRegisterTools()
+        private void DiscoverTools()
         {
+            if (_disposed) return;
+            
             lock (_registrationLock)
             {
                 try
@@ -38,73 +60,51 @@ namespace Saturn.Tools.Core
                     {
                         try
                         {
-                            // Check if tool is already registered to avoid duplicates
-                            var existingTool = _tools.Values.FirstOrDefault(t => t.GetType() == type);
-                            if (existingTool != null)
-                            {
-                                continue;
-                            }
-                            
-                            var tool = (ITool?)Activator.CreateInstance(type);
+                            // Cache the tool type for future reference
+                            var tool = _serviceProvider.GetService(type) as ITool;
                             if (tool == null)
                             {
-                                Console.WriteLine($"Warning: Failed to create instance of tool {type.Name}");
+                                _logger.LogWarning("Failed to create instance of tool {ToolType}", type.Name);
                                 continue;
                             }
                             
-                            // Inject dependencies if the tool needs them
-                            if (tool is IDependencyInjectable injectable)
-                            {
-                                injectable.InjectDependencies(agentManager);
-                            }
-                            
-                            Register(tool);
+                            _toolTypes.TryAdd(tool.Name, type);
+                            _logger.LogDebug("Registered tool: {ToolName} ({ToolType})", tool.Name, type.Name);
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"Failed to auto-register tool {type.Name}: {ex.Message}");
-                            if (ex.InnerException != null)
-                            {
-                                Console.WriteLine($"Inner exception: {ex.InnerException.Message}");
-                            }
+                            _logger.LogError(ex, "Failed to auto-register tool {ToolType}", type.Name);
                         }
                     }
+                    
+                    _logger.LogInformation("Discovered {ToolCount} tools", _toolTypes.Count);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Critical error during tool auto-registration: {ex.Message}");
-                    throw; // Re-throw critical errors
+                    _logger.LogError(ex, "Critical error during tool auto-registration");
+                    throw;
                 }
             }
         }
         
         public void Register(ITool tool)
         {
-            if (tool == null)
-            {
-                throw new ArgumentNullException(nameof(tool));
-            }
-            
+            if (_disposed) throw new ObjectDisposedException(nameof(ToolRegistry));
+            if (tool == null) throw new ArgumentNullException(nameof(tool));
             if (string.IsNullOrWhiteSpace(tool.Name))
-            {
                 throw new ArgumentException("Tool name cannot be null or empty", nameof(tool));
-            }
             
-            _tools.AddOrUpdate(tool.Name, tool, (key, oldValue) => tool);
+            _toolTypes.TryAdd(tool.Name, tool.GetType());
+            _toolInstances.AddOrUpdate(tool.Name, tool, (key, oldValue) => tool);
         }
         
         public void Register<T>() where T : ITool, new()
         {
+            if (_disposed) throw new ObjectDisposedException(nameof(ToolRegistry));
+            
             try
             {
-                var tool = new T();
-                
-                // Inject dependencies if the tool needs them
-                if (tool is IDependencyInjectable injectable)
-                {
-                    injectable.InjectDependencies(agentManager);
-                }
-                
+                var tool = _serviceProvider.GetService<T>() ?? new T();
                 Register(tool);
             }
             catch (Exception ex)
@@ -115,38 +115,35 @@ namespace Saturn.Tools.Core
         
         public ITool? Get(string name)
         {
-            if (string.IsNullOrEmpty(name))
-            {
-                return null;
-            }
+            if (_disposed || string.IsNullOrEmpty(name)) return null;
             
-            _tools.TryGetValue(name, out var tool);
-            return tool;
+            return _toolInstances.GetOrAdd(name, toolName =>
+            {
+                if (_toolTypes.TryGetValue(toolName, out var toolType))
+                {
+                    return _serviceProvider.GetService(toolType) as ITool;
+                }
+                return null;
+            }!);
         }
         
-        public ITool? GetTool(string name)
-        {
-            return Get(name);
-        }
+        public ITool? GetTool(string name) => Get(name);
         
-        public T? Get<T>(string name) where T : class, ITool
-        {
-            return Get(name) as T;
-        }
+        public T? Get<T>(string name) where T : class, ITool => Get(name) as T;
         
-        public bool Contains(string name)
-        {
-            return !string.IsNullOrEmpty(name) && _tools.ContainsKey(name);
-        }
+        public bool Contains(string name) => !string.IsNullOrEmpty(name) && _toolTypes.ContainsKey(name);
         
         public IEnumerable<ITool> GetAll()
         {
-            return _tools.Values;
+            if (_disposed) return Enumerable.Empty<ITool>();
+            
+            return _toolTypes.Keys.Select(Get).Where(t => t != null)!;
         }
         
         public IEnumerable<string> GetAllNames()
         {
-            return _tools.Keys;
+            if (_disposed) return Enumerable.Empty<string>();
+            return _toolTypes.Keys;
         }
 
         /// <summary>
@@ -162,6 +159,8 @@ namespace Saturn.Tools.Core
         /// </summary>
         public List<ToolDefinition> GetOpenRouterToolDefinitions(params string[] toolNames)
         {
+            if (_disposed) return new List<ToolDefinition>();
+            
             var selected = toolNames != null && toolNames.Length > 0
                 ? toolNames.Select(Get).Where(t => t != null)
                 : GetAll();
@@ -170,7 +169,20 @@ namespace Saturn.Tools.Core
         
         public void Clear()
         {
-            _tools.Clear();
+            if (_disposed) return;
+            
+            _toolTypes.Clear();
+            _toolInstances.Clear();
+            _parametersCache.Clear();
+            _toolDefinitionsCache.Clear();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            _disposed = true;
+            Clear();
         }
     }
 }

@@ -24,21 +24,25 @@ namespace Saturn.Agents
         public bool IsToolCall { get; set; }
     }
 
-    public class AgentBase
+    public class AgentBase : IDisposable
     {
         private readonly ToolRegistry toolRegistry;
         private readonly ParallelExecutor? parallelExecutor;
+        private readonly ChatHistoryRepository? _chatRepository;
+        private volatile bool _disposed;
+        
         public string Name => Configuration.Name;
         public AgentConfiguration Configuration { get; private set; }
         public List<Message> ChatHistory { get; private set; }
         public string? CurrentSessionId { get; set; }
         public event Action<string, string>? OnToolCall;
 
-        public AgentBase(AgentConfiguration configuration, ToolRegistry? toolRegistry = null, ParallelExecutor? parallelExecutor = null)
+        public AgentBase(AgentConfiguration configuration, ToolRegistry? toolRegistry = null, ParallelExecutor? parallelExecutor = null, ChatHistoryRepository? chatRepository = null)
         {
             Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             this.toolRegistry = toolRegistry ?? new ToolRegistry(null!); // Fallback for backward compatibility
             this.parallelExecutor = parallelExecutor;
+            this._chatRepository = chatRepository;
             ChatHistory = new List<Message>();
         }
 
@@ -60,10 +64,10 @@ namespace Saturn.Agents
 
         public async Task InitializeSessionAsync(string chatType, string? parentSessionId = null)
         {
-            if (CurrentSessionId != null)
-                return;
+            if (_disposed) throw new ObjectDisposedException(nameof(AgentBase));
+            if (CurrentSessionId != null) return;
 
-            var repository = new ChatHistoryRepository();
+            var repository = _chatRepository ?? new ChatHistoryRepository();
             try
             {
                 var session = await repository.CreateSessionAsync(
@@ -95,7 +99,8 @@ namespace Saturn.Agents
             }
             finally
             {
-                repository.Dispose();
+                if (repository != _chatRepository)
+                    repository.Dispose();
             }
         }
 
@@ -603,17 +608,21 @@ namespace Saturn.Agents
 
                         if (CurrentSessionId != null)
                         {
-                            var repository = new ChatHistoryRepository();
+                            var repository = _chatRepository ?? new ChatHistoryRepository();
                             try
                             {
                                 var messageId = await repository.SaveMessageAsync(CurrentSessionId, errorMessage);
                                 var toolCallRecord = await repository.SaveToolCallAsync(messageId.Id, CurrentSessionId, toolCall.Function.Name, toolCall.Function.Arguments ?? "{}", Name);
                                 await repository.UpdateToolCallResultAsync(toolCallRecord.Id, null, ex.Message, (int)stopwatch.ElapsedMilliseconds);
-                                repository.Dispose();
                             }
                             catch (Exception saveEx)
                             {
                                 Console.WriteLine($"Failed to save tool call error: {saveEx.Message}");
+                            }
+                            finally
+                            {
+                                if (repository != _chatRepository)
+                                    repository.Dispose();
                             }
                         }
                     }
@@ -621,6 +630,16 @@ namespace Saturn.Agents
 
                 await ExecuteStreamInternal("Please continue with your response", onChunk, cancellationToken);
             }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            
+            _disposed = true;
+            
+            // Dispose of injected repository if we don't own it
+            // ParallelExecutor and ToolRegistry are managed by DI container
         }
     }
 }

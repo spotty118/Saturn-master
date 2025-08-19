@@ -231,28 +231,7 @@ public class ParallelExecutor : IDisposable
 
     public ThreadPoolMetrics GetMetrics() => _metrics.Clone();
 
-    /// <summary>
-    /// Get current system and thread pool utilization metrics
-    /// </summary>
-    public SystemUtilizationMetrics GetSystemMetrics()
-    {
-        ThreadPool.GetAvailableThreads(out int availableWorkerThreads, out int availableCompletionPortThreads);
-        ThreadPool.GetMaxThreads(out int maxWorkerThreads, out int maxCompletionPortThreads);
 
-        return new SystemUtilizationMetrics
-        {
-            ProcessorCount = Environment.ProcessorCount,
-            MaxConcurrency = _maxConcurrency,
-            AvailableWorkerThreads = availableWorkerThreads,
-            MaxWorkerThreads = maxWorkerThreads,
-            AvailableCompletionPortThreads = availableCompletionPortThreads,
-            MaxCompletionPortThreads = maxCompletionPortThreads,
-            ActiveThreads = _metrics.ActiveThreads,
-            CpuIntensiveTasks = _metrics.CpuIntensiveTasks,
-            IoIntensiveTasks = _metrics.IoIntensiveTasks,
-            ThreadPoolUtilization = (double)(maxWorkerThreads - availableWorkerThreads) / maxWorkerThreads * 100
-        };
-    }
 
     protected virtual void Dispose(bool disposing)
     {

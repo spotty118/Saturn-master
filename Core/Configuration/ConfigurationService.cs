@@ -14,7 +14,7 @@ namespace Saturn.Core.Configuration
     /// Unified configuration service implementation that consolidates all Saturn configuration management.
     /// Replaces SettingsManager, ConfigurationManager, and MorphConfigurationManager with a single service.
     /// </summary>
-    public class ConfigurationService : IConfigurationService
+    public class ConfigurationService : IConfigurationService, IDisposable
     {
         private readonly ILogger<ConfigurationService> _logger;
         private readonly IConfigurationValidator _validator;
@@ -22,7 +22,10 @@ namespace Saturn.Core.Configuration
         private readonly string _configurationPath;
         private readonly JsonSerializerOptions _jsonOptions;
         private SaturnConfiguration? _cachedConfiguration;
-        private readonly object _lock = new object();
+        private DateTime _cacheTimestamp;
+        private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
+        private readonly FileSystemWatcher? _fileWatcher;
+        private volatile bool _disposed;
 
         public event EventHandler<ConfigurationChangedEventArgs>? ConfigurationChanged;
 
@@ -54,25 +57,54 @@ namespace Saturn.Core.Configuration
 
             // Subscribe to change notifications
             _changeNotifier.Subscribe<SaturnConfiguration>("Saturn", OnConfigurationChanged);
+
+            // Set up file system watcher for external config changes
+            try
+            {
+                _fileWatcher = new FileSystemWatcher(Path.GetDirectoryName(_configurationPath)!)
+                {
+                    Filter = Path.GetFileName(_configurationPath),
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                    EnableRaisingEvents = true
+                };
+                _fileWatcher.Changed += OnConfigurationFileChanged;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to setup file watcher for configuration changes");
+            }
         }
 
         public async Task<SaturnConfiguration> GetConfigurationAsync()
         {
+            if (_disposed) throw new ObjectDisposedException(nameof(ConfigurationService));
+            
             try
             {
-                lock (_lock)
+                _lock.EnterReadLock();
+                try
                 {
-                    if (_cachedConfiguration != null)
+                    if (_cachedConfiguration != null && IsConfigurationCacheValid())
                     {
                         return _cachedConfiguration;
                     }
                 }
+                finally
+                {
+                    _lock.ExitReadLock();
+                }
 
                 var configuration = await LoadConfigurationFromFileAsync();
                 
-                lock (_lock)
+                _lock.EnterWriteLock();
+                try
                 {
                     _cachedConfiguration = configuration;
+                    _cacheTimestamp = DateTime.UtcNow;
+                }
+                finally
+                {
+                    _lock.ExitWriteLock();
                 }
 
                 _logger.LogDebug("Configuration loaded successfully");
@@ -105,9 +137,15 @@ namespace Saturn.Core.Configuration
                 await SaveConfigurationToFileAsync(configuration);
 
                 // Update cache
-                lock (_lock)
+                _lock.EnterWriteLock();
+                try
                 {
                     _cachedConfiguration = configuration;
+                    _cacheTimestamp = DateTime.UtcNow;
+                }
+                finally
+                {
+                    _lock.ExitWriteLock();
                 }
 
                 // Notify of changes
@@ -368,6 +406,64 @@ namespace Saturn.Core.Configuration
             {
                 _logger.LogError(ex, "Error processing configuration changes");
             }
+        }
+
+        private bool IsConfigurationCacheValid()
+        {
+            // Cache is valid for 5 minutes or until file changes
+            return (DateTime.UtcNow - _cacheTimestamp).TotalMinutes < 5;
+        }
+
+        private void OnConfigurationFileChanged(object sender, FileSystemEventArgs e)
+        {
+            Task.Run(async () =>
+            {
+                try
+                {
+                    // Debounce multiple file system events
+                    await Task.Delay(200);
+                    
+                    _lock.EnterWriteLock();
+                    try
+                    {
+                        _cachedConfiguration = null;
+                        _cacheTimestamp = DateTime.MinValue;
+                    }
+                    finally
+                    {
+                        _lock.ExitWriteLock();
+                    }
+                    
+                    _logger.LogDebug("Configuration cache invalidated due to file change");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Error handling configuration file change");
+                }
+            });
+        }
+
+        private void OnConfigurationChanged<T>(T oldConfig, T newConfig) where T : class
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                _cachedConfiguration = null;
+                _cacheTimestamp = DateTime.MinValue;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+            _fileWatcher?.Dispose();
+            _lock.Dispose();
         }
     }
 

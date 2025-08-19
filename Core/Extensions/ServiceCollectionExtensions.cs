@@ -136,19 +136,14 @@ namespace Saturn.Core.Extensions
         /// </summary>
         public static IServiceCollection AddSaturnPerformance(this IServiceCollection services)
         {
+            // Cache processor count to avoid repeated Environment calls
+            var processorCount = Environment.ProcessorCount;
+            
             // Parallel execution engine with ThreadPool optimization
             services.AddSingleton<ParallelExecutor>(provider =>
             {
-                // Configure optimal concurrency based on system capabilities
-                var maxConcurrency = Environment.ProcessorCount * 2;
+                var maxConcurrency = processorCount * 2;
                 return new ParallelExecutor(maxConcurrency);
-            });
-
-            // System metrics tool for monitoring multi-threading performance
-            services.AddTransient<SystemMetricsTool>(provider =>
-            {
-                var parallelExecutor = provider.GetService<ParallelExecutor>();
-                return new SystemMetricsTool(parallelExecutor);
             });
 
             return services;

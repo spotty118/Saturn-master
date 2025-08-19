@@ -416,6 +416,7 @@ Examples
                     }
                 }
             }
+        }
             catch (UnauthorizedAccessException)
             {
                 items.Add(CreateErrorItem(Path.GetFileName(path), path, "Access Denied", currentDepth));
