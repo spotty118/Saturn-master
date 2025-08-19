@@ -165,6 +165,37 @@ TRADITIONAL:
   Avg File Size: 1.8 KB
 ```
 
+## ⚙️ Behavior and Strategy Details
+
+### Auto Strategy and Fallback
+- When strategy is `auto` and a Morph API key is configured:
+  - The tool attempts Morph first.
+  - If Morph throws (including HTTP 429 rate limiting), a warning is logged.
+  - If `EnableFallback` is true:
+    - If `code_edit` is already a proper patch (contains "*** Update File:" or "@@"), traditional fallback is attempted directly.
+    - If `code_edit` is not a proper patch (e.g., contains "// ... existing code ..."), the tool fails fast for deterministic behavior with error:
+      "Morph API error: ...; fallback failed: traditional diff requires patch format".
+  - If `EnableFallback` is false, the tool returns a clear Morph failure.
+
+### Dry Run
+- `dry_run: true` never writes files for either Morph or Traditional.
+- Returns a formatted preview and RawData containing strategy metadata.
+
+### ToolResult Shape
+- RawData is a dictionary with consistent keys:
+  - Morph:
+    - strategy: "morph"
+    - target_file, original_length, updated_length, changes_detected, dry_run
+  - Traditional:
+    - strategy: "traditional"
+    - original_instructions, patch (the patch used), fallback (payload from ApplyDiffTool)
+- FormattedOutput contains concise, human-readable summary.
+- Error paths preserve Morph error text and aggregate fallback errors when relevant.
+
+### Rate Limits (HTTP 429)
+- Detected by status code text or message containing "429" or "rate limit".
+- With fallback enabled and a valid patch, immediately attempts traditional; otherwise fails fast.
+
 ## 🧪 Testing
 
 ### Running Tests

@@ -260,15 +260,23 @@ Safety features:
                 Path = filePath,
                 Matches = new List<MatchInfo>()
             };
-            
+
+            var fileInfo = new FileInfo(filePath);
+            const long MaxFileSize = 50 * 1024 * 1024; // 50MB limit for in-memory processing
+
+            if (fileInfo.Length > MaxFileSize)
+            {
+                return await ProcessLargeFile(filePath, searchRegex, replacement, dryRun);
+            }
+
             var content = await File.ReadAllTextAsync(filePath);
             var originalContent = content;
             var encoding = DetectEncoding(filePath);
             var lineEnding = DetectLineEnding(content);
-            
+
             var matches = searchRegex.Matches(content);
             result.MatchCount = matches.Count;
-            
+
             if (matches.Count == 0)
             {
                 return result;
@@ -420,16 +428,83 @@ Safety features:
             return CreateSuccessResult(result, output.ToString());
         }
         
+        private async Task<FileResult> ProcessLargeFile(string filePath, Regex searchRegex, string replacement, bool dryRun)
+        {
+            var result = new FileResult
+            {
+                Path = filePath,
+                Matches = new List<MatchInfo>()
+            };
+
+            var tempFilePath = dryRun ? null : $"{filePath}.tmp_{Guid.NewGuid():N}";
+            var encoding = DetectEncoding(filePath);
+            var lineNumber = 0;
+
+            try
+            {
+                using var reader = new StreamReader(filePath, encoding);
+                using var writer = dryRun ? null : new StreamWriter(tempFilePath!, encoding);
+
+                string? line;
+                while ((line = await reader.ReadLineAsync()) != null)
+                {
+                    lineNumber++;
+                    var matches = searchRegex.Matches(line);
+
+                    if (matches.Count > 0)
+                    {
+                        result.MatchCount += matches.Count;
+
+                        foreach (Match match in matches)
+                        {
+                            result.Matches.Add(new MatchInfo
+                            {
+                                LineNumber = lineNumber,
+                                ColumnNumber = match.Index + 1,
+                                MatchedText = match.Value,
+                                ReplacementText = replacement
+                            });
+                        }
+
+                        if (!dryRun)
+                        {
+                            line = searchRegex.Replace(line, replacement);
+                        }
+                    }
+
+                    if (!dryRun)
+                    {
+                        await writer!.WriteLineAsync(line);
+                    }
+                }
+
+                if (!dryRun && result.MatchCount > 0)
+                {
+                    writer!.Close();
+                    File.Replace(tempFilePath!, filePath, null);
+                }
+            }
+            finally
+            {
+                if (tempFilePath != null && File.Exists(tempFilePath))
+                {
+                    try { File.Delete(tempFilePath); } catch { }
+                }
+            }
+
+            return result;
+        }
+
         private void ValidatePathSecurity(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
                 throw new ArgumentException("Path cannot be null or empty");
             }
-            
+
             var fullPath = Path.GetFullPath(path);
             var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
-            
+
             if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
             {
                 throw new SecurityException($"Access denied: Path '{path}' is outside the working directory");

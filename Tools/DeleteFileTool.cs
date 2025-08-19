@@ -98,7 +98,7 @@ Safety features:
             {
                 var fullPath = Path.GetFullPath(path);
                 
-                var deletionInfo = await AnalyzeDeletion(fullPath, pattern, recursive);
+                var deletionInfo = await AnalyzeDeletion(fullPath, pattern ?? "*", recursive);
                 
                 if (deletionInfo.TotalItems == 0)
                 {

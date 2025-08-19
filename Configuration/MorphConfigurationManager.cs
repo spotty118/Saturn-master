@@ -35,7 +35,12 @@ namespace Saturn.Configuration
             };
         }
 
-        public async Task<MorphConfiguration> LoadConfigurationAsync()
+        // Explicit parameterless constructor for test frameworks that require it
+        public MorphConfigurationManager() : this(null)
+        {
+        }
+
+        public virtual async Task<MorphConfiguration> LoadConfigurationAsync()
         {
             try
             {
@@ -58,7 +63,7 @@ namespace Saturn.Configuration
             }
         }
 
-        public async Task SaveConfigurationAsync(MorphConfiguration config)
+        public virtual async Task SaveConfigurationAsync(MorphConfiguration config)
         {
             try
             {
@@ -76,20 +81,20 @@ namespace Saturn.Configuration
             }
         }
 
-        public async Task<bool> IsConfiguredAsync()
+        public virtual async Task<bool> IsConfiguredAsync()
         {
             var apiKey = await GetApiKeyAsync();
             return !string.IsNullOrEmpty(apiKey);
         }
 
-        public async Task SetApiKeyAsync(string apiKey)
+        public virtual async Task SetApiKeyAsync(string apiKey)
         {
             var config = await LoadConfigurationAsync();
             config.ApiKey = apiKey;
             await SaveConfigurationAsync(config);
         }
 
-        public async Task<string> GetApiKeyAsync()
+        public virtual async Task<string> GetApiKeyAsync()
         {
             // Priority: 1) Environment variable, 2) Dedicated Morph config, 3) OpenRouter fallback
             
@@ -120,7 +125,7 @@ namespace Saturn.Configuration
             return string.Empty;
         }
 
-        public async Task<string> GetApiKeySourceAsync()
+        public virtual async Task<string> GetApiKeySourceAsync()
         {
             var envKey = Environment.GetEnvironmentVariable("MORPH_API_KEY");
             if (!string.IsNullOrEmpty(envKey))
@@ -146,21 +151,21 @@ namespace Saturn.Configuration
             return "No API Key Available";
         }
 
-        public async Task<bool> IsMorphEnabledAsync()
+        public virtual async Task<bool> IsMorphEnabledAsync()
         {
             // Consider Morph "enabled" if any API key source is configured
             var apiKey = await GetApiKeyAsync();
             return !string.IsNullOrEmpty(apiKey);
         }
 
-        public async Task SetDefaultStrategyAsync(DiffStrategy strategy)
+        public virtual async Task SetDefaultStrategyAsync(DiffStrategy strategy)
         {
             var config = await LoadConfigurationAsync();
             config.DefaultStrategy = strategy;
             await SaveConfigurationAsync(config);
         }
 
-        public async Task<DiffStrategy> GetDefaultStrategyAsync()
+        public virtual async Task<DiffStrategy> GetDefaultStrategyAsync()
         {
             var config = await LoadConfigurationAsync();
             return config.DefaultStrategy;

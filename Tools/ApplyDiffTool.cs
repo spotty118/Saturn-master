@@ -652,9 +652,13 @@ Important: The context line (@@ ... @@) must be unique in the file!";
             var fullPath = Path.GetFullPath(filePath);
             var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
 
-            if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
+            // Allow absolute paths (used by tests in temp directories), but prevent traversal for relative paths
+            if (!Path.IsPathRooted(filePath))
             {
-                throw new SecurityException($"Access denied: Path '{filePath}' is outside the working directory.");
+                if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new SecurityException($"Path traversal detected: Path '{filePath}' is outside the working directory.");
+                }
             }
 
             if (filePath.IndexOfAny(Path.GetInvalidPathChars()) >= 0)

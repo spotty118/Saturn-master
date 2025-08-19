@@ -43,7 +43,7 @@ namespace Saturn.Tools.MultiAgent
             return agentId == "all" ? "Terminating all agents" : $"Terminating agent: {agentId}";
         }
         
-        public override async Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
+        public override Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
         {
             try
             {
@@ -52,30 +52,28 @@ namespace Saturn.Tools.MultiAgent
                 if (agentId.Equals("all", StringComparison.OrdinalIgnoreCase))
                 {
                     var agents = agentManager.GetAllAgentStatuses();
-                    var agentExists = false;
                     
                     if (agents.Any())
                     {
-                        agentExists = true;
                         var agentList = string.Join(", ", agents.Select(a => $"{a.Name} ({a.AgentId})"));
                         
                         agentManager.TerminateAllAgents();
                         
-                        return CreateSuccessResult(
+                        return Task.FromResult(CreateSuccessResult(
                             new Dictionary<string, object>
                             {
                                 ["terminated_agents"] = agentList,
                                 ["count"] = agents.Count
                             },
                             $"Terminated {agents.Count} agents: {agentList}"
-                        );
+                        ));
                     }
                     else
                     {
-                        return CreateSuccessResult(
+                        return Task.FromResult(CreateSuccessResult(
                             new Dictionary<string, object> { ["count"] = 0 },
                             "No agents were running"
-                        );
+                        ));
                     }
                 }
                 else
@@ -85,7 +83,7 @@ namespace Saturn.Tools.MultiAgent
                     var currentCount = agentManager.GetCurrentAgentCount();
                     var maxCount = agentManager.GetMaxConcurrentAgents();
                     
-                    return CreateSuccessResult(
+                    return Task.FromResult(CreateSuccessResult(
                         new Dictionary<string, object>
                         {
                             ["agent_id"] = agentId,
@@ -93,12 +91,12 @@ namespace Saturn.Tools.MultiAgent
                             ["capacity"] = $"{currentCount}/{maxCount}"
                         },
                         $"Terminated agent {agentId}. Remaining agents: {currentCount}/{maxCount}"
-                    );
+                    ));
                 }
             }
             catch (Exception ex)
             {
-                return CreateErrorResult($"Failed to terminate agent(s): {ex.Message}");
+                return Task.FromResult(CreateErrorResult($"Failed to terminate agent(s): {ex.Message}"));
             }
         }
     }

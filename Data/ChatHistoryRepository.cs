@@ -6,30 +6,36 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Saturn.Data.Models;
 using Saturn.OpenRouter.Models.Api.Chat;
 
 namespace Saturn.Data;
 
-public class ChatHistoryRepository : IDisposable
+public class ChatHistoryRepository : IChatHistoryRepository
 {
     private readonly string _connectionString;
     private readonly string _dbPath;
+    private readonly ILogger<ChatHistoryRepository> _logger;
     private bool _disposed = false;
+    private readonly object _connectionLock = new object();
+    private SqliteConnection? _sharedConnection;
 
-    public ChatHistoryRepository(string? workspacePath = null)
+    public ChatHistoryRepository(string? workspacePath = null, ILogger<ChatHistoryRepository>? logger = null)
     {
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ChatHistoryRepository>.Instance;
+
         var saturnDir = workspacePath != null
             ? Path.Combine(workspacePath, ".saturn")
             : Path.Combine(Environment.CurrentDirectory, ".saturn");
-        
+
         if (!Directory.Exists(saturnDir))
         {
             Directory.CreateDirectory(saturnDir);
         }
 
         _dbPath = Path.Combine(saturnDir, "chats.db");
-        
+
         // SECURITY FIX: Use SqliteConnectionStringBuilder for safe connection string construction
         var connectionStringBuilder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
         {
@@ -37,7 +43,7 @@ public class ChatHistoryRepository : IDisposable
             Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate
         };
         _connectionString = connectionStringBuilder.ConnectionString;
-        
+
         InitializeDatabase();
     }
 
@@ -150,22 +156,37 @@ public class ChatHistoryRepository : IDisposable
         return connection;
     }
 
-    public async Task<ChatSession> CreateSessionAsync(string title, string chatType = "main",
-        string? parentSessionId = null, string? agentName = null, string? model = null,
-        string? systemPrompt = null, double? temperature = null, int? maxTokens = null,
+    private SqliteConnection GetSharedConnection()
+    {
+        lock (_connectionLock)
+        {
+            if (_sharedConnection == null || _sharedConnection.State != System.Data.ConnectionState.Open)
+            {
+                _sharedConnection?.Dispose();
+                _sharedConnection = CreateConnection();
+            }
+            return _sharedConnection;
+        }
+    }
+
+    public async Task<ChatSession> CreateSessionAsync(
+        string title,
+        ChatSessionOptions? options = null,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        options ??= new ChatSessionOptions();
+
         var session = new ChatSession
         {
             Title = title,
-            ChatType = chatType,
-            ParentSessionId = parentSessionId,
-            AgentName = agentName,
-            Model = model,
-            SystemPrompt = systemPrompt,
-            Temperature = temperature,
-            MaxTokens = maxTokens
+            ChatType = options.ChatType,
+            ParentSessionId = options.ParentSessionId,
+            AgentName = options.AgentName,
+            Model = options.Model,
+            SystemPrompt = options.SystemPrompt,
+            Temperature = options.Temperature,
+            MaxTokens = options.MaxTokens
         };
 
         using var connection = CreateConnection();
@@ -418,7 +439,7 @@ public class ChatHistoryRepository : IDisposable
 
     public async Task<List<ChatSession>> GetSessionsAsync(string? chatType = null, int limit = 100)
     {
-        using var connection = CreateConnection();
+        var connection = GetSharedConnection();
 
         var sql = chatType != null
             ? "SELECT * FROM ChatSessions WHERE ChatType = @ChatType ORDER BY UpdatedAt DESC LIMIT @Limit"
@@ -624,9 +645,13 @@ public class ChatHistoryRepository : IDisposable
             if (disposing)
             {
                 // Dispose managed resources
-                _connection?.Dispose();
+                lock (_connectionLock)
+                {
+                    _sharedConnection?.Dispose();
+                    _sharedConnection = null;
+                }
             }
-            
+
             _disposed = true;
         }
     }

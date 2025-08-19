@@ -28,36 +28,23 @@ namespace Saturn.Tools.Core
         
         protected T GetParameter<T>(Dictionary<string, object> parameters, string key, T defaultValue = default!)
         {
-            if (parameters.TryGetValue(key, out var value))
-            {
-                if (value is T typedValue)
-                {
-                    return typedValue;
-                }
+            return ParameterExtractor.GetParameter(parameters, key, defaultValue);
+        }
 
-                if (value is JsonElement jsonElement)
-                {
-                    try
-                    {
-                        return jsonElement.Deserialize<T>() ?? defaultValue;
-                    }
-                    catch
-                    {
-                        return defaultValue;
-                    }
-                }
+        protected T GetRequiredParameter<T>(Dictionary<string, object> parameters, string key)
+        {
+            return ParameterExtractor.GetRequiredParameter<T>(parameters, key);
+        }
 
-                try
-                {
-                    return (T)Convert.ChangeType(value, typeof(T));
-                }
-                catch
-                {
-                    return defaultValue;
-                }
-            }
+        protected string ValidateFilePath(Dictionary<string, object> parameters, string key, bool required = true)
+        {
+            return ParameterExtractor.ValidateFilePath(parameters, key, required);
+        }
 
-            return defaultValue;
+        protected T ValidateNumericRange<T>(Dictionary<string, object> parameters, string key, T min, T max, T defaultValue = default!)
+            where T : IComparable<T>
+        {
+            return ParameterExtractor.ValidateNumericRange(parameters, key, min, max, defaultValue);
         }
         
         protected ToolResult CreateSuccessResult(object data, string? formattedOutput = null)

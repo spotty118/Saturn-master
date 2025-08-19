@@ -164,7 +164,7 @@ Examples
                 var visitedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var items = await EnumerateDirectoryAsync(
                     fullPath, 
-                    pattern, 
+                    pattern ?? "*", 
                     recursive, 
                     includeHidden, 
                     maxDepth, 
@@ -293,7 +293,7 @@ Examples
                             {
                                 var subItems = await EnumerateDirectoryAsync(
                                     dir.FullName, 
-                                    pattern, 
+                                    pattern ?? "*", 
                                     recursive, 
                                     includeHidden, 
                                     maxDepth, 
@@ -438,7 +438,7 @@ Examples
             foreach (var item in items.OrderBy(i => i.FullPath))
             {
                 var parentPath = Path.GetDirectoryName(item.FullPath);
-                if (!nodeMap.TryGetValue(parentPath, out var parentNode))
+                if (parentPath == null || !nodeMap.TryGetValue(parentPath, out var parentNode))
                 {
                     continue;
                 }

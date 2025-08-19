@@ -43,7 +43,7 @@ namespace Saturn.Tools.MultiAgent
             return string.IsNullOrEmpty(agentId) ? "Getting all agent statuses" : $"Getting status for: {agentId}";
         }
         
-        public override async Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
+        public override Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
         {
             try
             {
@@ -55,7 +55,7 @@ namespace Saturn.Tools.MultiAgent
                     
                     if (!allStatuses.Any())
                     {
-                        return CreateSuccessResult(
+                        return Task.FromResult(CreateSuccessResult(
                             new Dictionary<string, object>
                             {
                                 ["agents"] = new List<object>(),
@@ -63,7 +63,7 @@ namespace Saturn.Tools.MultiAgent
                                 ["capacity"] = $"0/{agentManager.GetMaxConcurrentAgents()}"
                             },
                             "No agents are currently running"
-                        );
+                        ));
                     }
                     
                     var agentData = allStatuses.Select(status => new Dictionary<string, object>
@@ -80,7 +80,7 @@ namespace Saturn.Tools.MultiAgent
                     var currentCount = agentManager.GetCurrentAgentCount();
                     var maxCount = agentManager.GetMaxConcurrentAgents();
                     
-                    return CreateSuccessResult(
+                    return Task.FromResult(CreateSuccessResult(
                         new Dictionary<string, object>
                         {
                             ["agents"] = agentData,
@@ -90,7 +90,7 @@ namespace Saturn.Tools.MultiAgent
                             ["working_count"] = allStatuses.Count(a => !a.IsIdle)
                         },
                         $"Found {currentCount} agents ({allStatuses.Count(a => a.IsIdle)} idle, {allStatuses.Count(a => !a.IsIdle)} working)"
-                    );
+                    ));
                 }
                 else
                 {
@@ -98,10 +98,10 @@ namespace Saturn.Tools.MultiAgent
                     
                     if (!status.Exists)
                     {
-                        return CreateErrorResult($"Agent with ID '{agentId}' not found");
+                        return Task.FromResult(CreateErrorResult($"Agent with ID '{agentId}' not found"));
                     }
                     
-                    return CreateSuccessResult(
+                    return Task.FromResult(CreateSuccessResult(
                         new Dictionary<string, object>
                         {
                             ["agent_id"] = status.AgentId,
@@ -113,12 +113,12 @@ namespace Saturn.Tools.MultiAgent
                             ["running_time_seconds"] = status.RunningTime.TotalSeconds
                         },
                         $"Agent '{status.Name}' ({status.AgentId}) is {status.Status.ToLower()}"
-                    );
+                    ));
                 }
             }
             catch (Exception ex)
             {
-                return CreateErrorResult($"Failed to get agent status: {ex.Message}");
+                return Task.FromResult(CreateErrorResult($"Failed to get agent status: {ex.Message}"));
             }
         }
     }

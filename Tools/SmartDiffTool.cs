@@ -18,7 +18,7 @@ namespace Saturn.Tools
         private readonly MorphConfigurationManager _configManager;
         private readonly ILogger<SmartDiffTool>? _logger;
 
-        public override string Name => "apply_diff";
+        public override string Name => "smart_apply_diff";
 
         public override string Description => @"Use this tool to make intelligent changes to files with automatic strategy selection.
 

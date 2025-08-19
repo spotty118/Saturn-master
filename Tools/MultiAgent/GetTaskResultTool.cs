@@ -42,7 +42,7 @@ namespace Saturn.Tools.MultiAgent
             return $"Getting result for task: {taskId}";
         }
         
-        public override async Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
+        public override Task<ToolResult> ExecuteAsync(Dictionary<string, object> parameters)
         {
             try
             {
@@ -51,10 +51,10 @@ namespace Saturn.Tools.MultiAgent
                 
                 if (result == null)
                 {
-                    return CreateErrorResult($"Task '{taskId}' not found or not yet completed");
+                    return Task.FromResult(CreateErrorResult($"Task '{taskId}' not found or not yet completed"));
                 }
                 
-                return CreateSuccessResult(
+                return Task.FromResult(CreateSuccessResult(
                     new Dictionary<string, object>
                     {
                         ["task_id"] = result.TaskId,
@@ -68,11 +68,11 @@ namespace Saturn.Tools.MultiAgent
                     result.Success ? 
                         $"Task completed successfully by {result.AgentName}" : 
                         $"Task failed: {result.Result}"
-                );
+                ));
             }
             catch (Exception ex)
             {
-                return CreateErrorResult($"Failed to get task result: {ex.Message}");
+                return Task.FromResult(CreateErrorResult($"Error getting task result: {ex.Message}"));
             }
         }
     }

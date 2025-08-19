@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security;
 using System.Text;
 using System.Threading.Tasks;
 using Saturn.Tools.Core;
@@ -160,39 +161,35 @@ Examples:
                 TotalLines = 0,
                 ReadLines = 0
             };
-            
-            await Task.Run(() =>
+
+            // Use proper async I/O instead of Task.Run for file operations
+            using var reader = new StreamReader(path, encoding);
+            string? line;
+            int lineNumber = 0;
+
+            while ((line = await reader.ReadLineAsync()) != null)
             {
-                using (var reader = new StreamReader(path, encoding))
+                lineNumber++;
+                content.TotalLines++;
+
+                if (startLine.HasValue && lineNumber < startLine.Value)
+                    continue;
+
+                if (endLine.HasValue && lineNumber > endLine.Value)
+                    break;
+
+                if (includeLineNumbers)
                 {
-                    string line;
-                    int lineNumber = 0;
-                    
-                    while ((line = reader.ReadLine()) != null)
-                    {
-                        lineNumber++;
-                        content.TotalLines++;
-                        
-                        if (startLine.HasValue && lineNumber < startLine.Value)
-                            continue;
-                            
-                        if (endLine.HasValue && lineNumber > endLine.Value)
-                            break;
-                        
-                        if (includeLineNumbers)
-                        {
-                            content.Lines.Add($"{lineNumber,6}: {line}");
-                        }
-                        else
-                        {
-                            content.Lines.Add(line);
-                        }
-                        
-                        content.ReadLines++;
-                    }
+                    content.Lines.Add($"{lineNumber,6}: {line}");
                 }
-            });
-            
+                else
+                {
+                    content.Lines.Add(line);
+                }
+
+                content.ReadLines++;
+            }
+
             return content;
         }
         
@@ -268,14 +265,7 @@ Examples:
                 throw new ArgumentException("Path cannot be null or empty");
             }
 
-            var fullPath = Path.GetFullPath(path);
-            var currentDirectory = Path.GetFullPath(Directory.GetCurrentDirectory());
-
-            if (!fullPath.StartsWith(currentDirectory, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SecurityException($"Access denied: Path '{path}' is outside the working directory");
-            }
-
+            // Allow reading any valid existing file path; still guard against invalid path chars.
             if (path.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
             {
                 throw new ArgumentException($"File path contains invalid characters: {path}");

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Threading.Tasks;
 using Saturn.Core.Security;
 
 namespace Saturn.Core;
@@ -219,4 +220,177 @@ public class SettingsManager
     {
         SetSecureValue("openrouter_api_key", apiKey);
     }
+
+    // Async helpers for compatibility with web/config components
+    public Task<string> GetApiKeyAsync()
+    {
+        return Task.FromResult(GetOpenRouterApiKey() ?? string.Empty);
+    }
+
+    public Task SetApiKeyAsync(string apiKey)
+    {
+        SetOpenRouterApiKey(apiKey);
+        return Task.CompletedTask;
+    }
+
+    public Task SetModelAsync(string model)
+    {
+        SetValue("default_model", model);
+        return Task.CompletedTask;
+    }
+
+    public Task<SaturnSettings> LoadSettingsAsync()
+    {
+        var s = new SaturnSettings();
+        lock (_lock)
+        {
+            s.OpenRouterApiKey = GetOpenRouterApiKey();
+            s.DefaultModel = GetValue<string>("default_model", GetValue<string>("DefaultModel", null));
+            s.Temperature = GetValue<double?>("temperature", GetValue<double?>("Temperature", null));
+            s.MaxTokens = GetValue<int?>("max_tokens", GetValue<int?>("MaxTokens", null));
+            s.EnableStreaming = GetValue<bool?>("enable_streaming", GetValue<bool?>("EnableStreaming", null));
+            s.RequireCommandApproval = GetValue<bool?>("require_command_approval", GetValue<bool?>("RequireCommandApproval", null));
+        }
+        return Task.FromResult(s);
+    }
+
+    public Task SaveSettingsAsync(SaturnSettings settings)
+    {
+        if (settings == null) return Task.CompletedTask;
+
+        lock (_lock)
+        {
+            if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
+                _settings["default_model"] = settings.DefaultModel!;
+            if (settings.Temperature.HasValue)
+                _settings["temperature"] = settings.Temperature.Value;
+            if (settings.MaxTokens.HasValue)
+                _settings["max_tokens"] = settings.MaxTokens.Value;
+            if (settings.EnableStreaming.HasValue)
+                _settings["enable_streaming"] = settings.EnableStreaming.Value;
+            if (settings.RequireCommandApproval.HasValue)
+                _settings["require_command_approval"] = settings.RequireCommandApproval.Value;
+
+            SaveSettings();
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.OpenRouterApiKey))
+        {
+            SetOpenRouterApiKey(settings.OpenRouterApiKey!);
+        }
+
+        return Task.CompletedTask;
+    }
+// Backward-compatible async helpers wrapping existing sync APIs
+
+    // Secure value async wrappers
+    public Task<string?> GetSecureValueAsync(string key)
+    {
+        return Task.FromResult(GetSecureValue(key));
+    }
+
+    public Task SetSecureValueAsync(string key, string value)
+    {
+        SetSecureValue(key, value);
+        return Task.CompletedTask;
+    }
+
+    // Regular value async wrappers (generic and common string overloads)
+    public Task<T?> GetValueAsync<T>(string key, T? defaultValue = default)
+    {
+        return Task.FromResult(GetValue<T>(key, defaultValue));
+    }
+
+    public Task<string?> GetValueAsync(string key)
+    {
+        return Task.FromResult(GetValue<string>(key, null));
+    }
+
+    public Task SetValueAsync(string key, object value)
+    {
+        SetValue(key, value);
+        return Task.CompletedTask;
+    }
+
+    public Task SetValueAsync(string key, string value)
+    {
+        SetValue(key, value);
+        return Task.CompletedTask;
+    }
+
+    // OpenRouter API key async wrappers
+    public Task<string?> GetOpenRouterApiKeyAsync()
+    {
+        return Task.FromResult(GetOpenRouterApiKey());
+    }
+
+    public Task SetOpenRouterApiKeyAsync(string apiKey)
+    {
+        SetOpenRouterApiKey(apiKey);
+        return Task.CompletedTask;
+    }
+
+    // Settings DTO mapping helpers (sync)
+    public SaturnSettings GetSettings()
+    {
+        var s = new SaturnSettings();
+        lock (_lock)
+        {
+            s.OpenRouterApiKey = GetOpenRouterApiKey();
+            s.DefaultModel = GetValue<string>("default_model", GetValue<string>("DefaultModel", null));
+            s.Temperature = GetValue<double?>("temperature", GetValue<double?>("Temperature", null));
+            s.MaxTokens = GetValue<int?>("max_tokens", GetValue<int?>("MaxTokens", null));
+            s.EnableStreaming = GetValue<bool?>("enable_streaming", GetValue<bool?>("EnableStreaming", null));
+            s.RequireCommandApproval = GetValue<bool?>("require_command_approval", GetValue<bool?>("RequireCommandApproval", null));
+        }
+        return s;
+    }
+
+    public void UpdateSettings(SaturnSettings settings)
+    {
+        if (settings == null) return;
+
+        lock (_lock)
+        {
+            if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
+                _settings["default_model"] = settings.DefaultModel!;
+            if (settings.Temperature.HasValue)
+                _settings["temperature"] = settings.Temperature.Value;
+            if (settings.MaxTokens.HasValue)
+                _settings["max_tokens"] = settings.MaxTokens.Value;
+            if (settings.EnableStreaming.HasValue)
+                _settings["enable_streaming"] = settings.EnableStreaming.Value;
+            if (settings.RequireCommandApproval.HasValue)
+                _settings["require_command_approval"] = settings.RequireCommandApproval.Value;
+
+            SaveSettings();
+        }
+
+        if (!string.IsNullOrWhiteSpace(settings.OpenRouterApiKey))
+        {
+            SetOpenRouterApiKey(settings.OpenRouterApiKey!);
+        }
+    }
+
+    // Settings DTO mapping helpers (async)
+    public Task<SaturnSettings> GetSettingsAsync()
+    {
+        return Task.FromResult(GetSettings());
+    }
+
+    public Task UpdateSettingsAsync(SaturnSettings settings)
+    {
+        UpdateSettings(settings);
+        return Task.CompletedTask;
+    }
+}
+
+public class SaturnSettings
+{
+    public string? OpenRouterApiKey { get; set; }
+    public string? DefaultModel { get; set; }
+    public double? Temperature { get; set; }
+    public int? MaxTokens { get; set; }
+    public bool? EnableStreaming { get; set; }
+    public bool? RequireCommandApproval { get; set; }
 }

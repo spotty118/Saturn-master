@@ -15,6 +15,7 @@ using Saturn.Tools;
 using Saturn.Web;
 using Saturn.Core.Configuration;
 using Saturn.Core.Logging;
+using Saturn.Core.Performance;
 using Saturn.Core.Validation;
 using System.Reflection;
 
@@ -39,6 +40,9 @@ namespace Saturn.Core.Extensions
             services.AddSaturnLogging(configuration);
             services.AddSaturnConfiguration(configuration);
             services.AddSaturnValidation();
+            
+            // Performance infrastructure
+            services.AddSaturnPerformance();
             
             // Data layer services
             services.AddSaturnData(configuration);
@@ -69,11 +73,7 @@ namespace Saturn.Core.Extensions
                 builder.ClearProviders();
                 
                 // Console logging with structured format
-                builder.AddConsole(options =>
-                {
-                    options.IncludeScopes = true;
-                    options.TimestampFormat = "[yyyy-MM-dd HH:mm:ss.fff] ";
-                });
+                builder.AddConsole();
                 
                 // Configure log levels from configuration
                 builder.AddConfiguration(configuration.GetSection("Logging"));
@@ -109,7 +109,8 @@ namespace Saturn.Core.Extensions
             services.AddSingleton<IConfigurationChangeNotifier, ConfigurationChangeNotifier>();
 
             // Legacy configuration managers (for backward compatibility during transition)
-            services.AddScoped<SettingsManager>();
+            // SettingsManager can be a singleton; it uses internal locking and file I/O per call
+            services.AddSingleton<SettingsManager>();
             services.AddScoped<MorphConfigurationManager>();
 
             return services;
@@ -130,18 +131,34 @@ namespace Saturn.Core.Extensions
         }
 
         /// <summary>
+        /// Configures high-performance parallel execution infrastructure.
+        /// Provides thread pool optimization and parallel processing capabilities.
+        /// </summary>
+        public static IServiceCollection AddSaturnPerformance(this IServiceCollection services)
+        {
+            // Parallel execution engine with ThreadPool optimization
+            services.AddSingleton<ParallelExecutor>(provider =>
+            {
+                // Configure optimal concurrency based on system capabilities
+                var maxConcurrency = Environment.ProcessorCount * 2;
+                return new ParallelExecutor(maxConcurrency);
+            });
+
+            return services;
+        }
+
+        /// <summary>
         /// Configures data layer services including chat history and persistence.
         /// </summary>
         public static IServiceCollection AddSaturnData(this IServiceCollection services, IConfiguration configuration)
         {
-            // Repository pattern implementation
-            services.AddScoped<ChatHistoryRepository>(provider =>
+            // Repository pattern implementation with proper DI
+            services.AddScoped<IChatHistoryRepository, ChatHistoryRepository>(provider =>
             {
                 var config = provider.GetRequiredService<IOptions<SaturnConfiguration>>().Value;
-                return new ChatHistoryRepository(config.WorkspacePath);
+                var logger = provider.GetRequiredService<ILogger<ChatHistoryRepository>>();
+                return new ChatHistoryRepository(config.WorkspacePath, logger);
             });
-
-            // Data access services (legacy services removed in modernization)
 
             return services;
         }
@@ -155,9 +172,12 @@ namespace Saturn.Core.Extensions
             services.AddSingleton<OpenRouterClient>(sp =>
             {
                 var section = configuration.GetSection("OpenRouter");
+                var settingsManager = sp.GetRequiredService<SettingsManager>();
+                var apiKey = settingsManager.GetOpenRouterApiKey() ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+
                 var options = new OpenRouterOptions
                 {
-                    ApiKey = section["ApiKey"],
+                    ApiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey,
                     Referer = section["Referer"],
                     Title = section["Title"]
                 };
@@ -191,13 +211,14 @@ namespace Saturn.Core.Extensions
                 return mgr;
             });
 
-            // Main agent built from configuration + ToolRegistry
+            // Main agent built from configuration + ToolRegistry + ParallelExecutor
             services.AddScoped<Agent>(sp =>
             {
                 var configService = sp.GetRequiredService<IConfigurationService>();
                 var saturnConfig = configService.GetConfigurationAsync().GetAwaiter().GetResult();
                 var openRouterClient = sp.GetRequiredService<OpenRouterClient>();
                 var toolRegistry = sp.GetRequiredService<ToolRegistry>();
+                var parallelExecutor = sp.GetRequiredService<ParallelExecutor>();
 
                 var agentConfig = new Saturn.Agents.Core.AgentConfiguration
                 {
@@ -214,7 +235,7 @@ namespace Saturn.Core.Extensions
                     MaxHistoryMessages = saturnConfig.MaxHistoryMessages
                 };
 
-                return new Agent(agentConfig, toolRegistry);
+                return new Agent(agentConfig, toolRegistry, parallelExecutor);
             });
 
             return services;
@@ -278,6 +299,7 @@ namespace Saturn.Core.Extensions
                 // Validate core services
                 _ = serviceProvider.GetRequiredService<IConfigurationService>();
                 _ = serviceProvider.GetRequiredService<IValidationService>();
+                _ = serviceProvider.GetRequiredService<ParallelExecutor>();
                 _ = serviceProvider.GetRequiredService<ToolRegistry>();
                 _ = serviceProvider.GetRequiredService<AgentManager>();
                 _ = serviceProvider.GetRequiredService<Agent>();

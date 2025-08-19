@@ -120,26 +120,23 @@ Examples:
                 return CreateErrorResult($"Path NOT found: {path}");
             }
             
-            await Task.Run(() =>
+            if (File.Exists(path))
             {
-                if (File.Exists(path))
+                await SearchFileAsync(path, regex, results, maxResults);
+            }
+            else if (Directory.Exists(path))
+            {
+                var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                var files = Directory.GetFiles(path, filePattern, searchOption);
+
+                foreach (var file in files)
                 {
-                    SearchFile(path, regex, results, maxResults);
+                    if (results.Count >= maxResults)
+                        break;
+
+                    await SearchFileAsync(file, regex, results, maxResults - results.Count);
                 }
-                else if (Directory.Exists(path))
-                {
-                    var searchOption = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-                    var files = Directory.GetFiles(path, filePattern, searchOption);
-                    
-                    foreach (var file in files)
-                    {
-                        if (results.Count >= maxResults)
-                            break;
-                        
-                        SearchFile(file, regex, results, maxResults - results.Count);
-                    }
-                }
-            });
+            }
             
             return FormatResults(results);
         }
@@ -201,7 +198,45 @@ Examples:
             
             return CreateSuccessResult(results, string.Join(Environment.NewLine, lines));
         }
-        
+
+        private async Task SearchFileAsync(string filePath, Regex regex, List<GrepResult> results, int maxResults)
+        {
+            try
+            {
+                using var reader = new StreamReader(filePath);
+                string? line;
+                int lineNumber = 0;
+
+                while ((line = await reader.ReadLineAsync()) != null && results.Count < maxResults)
+                {
+                    lineNumber++;
+                    var matches = regex.Matches(line);
+
+                    if (matches.Count > 0)
+                    {
+                        var result = new GrepResult
+                        {
+                            FilePath = filePath,
+                            LineNumber = lineNumber,
+                            Line = line,
+                            Matches = matches.Select(m => new MatchInfo
+                            {
+                                Value = m.Value,
+                                Index = m.Index,
+                                Length = m.Length
+                            }).ToList()
+                        };
+
+                        results.Add(result);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // Skip files that can't be read
+            }
+        }
+
         public class GrepResult
         {
             public string FilePath { get; set; } = string.Empty;

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -15,10 +16,10 @@ namespace Saturn.Tools
     {
         private const int DefaultTimeoutSeconds = 30;
         private const int MaxOutputLength = 1048576; // 1MB
-        private readonly List<CommandHistory> _commandHistory = new();
+        private readonly ConcurrentQueue<CommandHistory> _commandHistory = new();
         private readonly CommandExecutorConfig _config;
         private readonly ICommandApprovalService _approvalService;
-        private readonly object _historyLock = new object();
+        private volatile int _historyCount = 0;
         private bool _disposed = false;
 
         public ExecuteCommandTool() : this(new CommandExecutorConfig(), null!) { }
@@ -101,7 +102,7 @@ namespace Saturn.Tools
                 var workingDirectory = GetParameter<string>(arguments, "workingDirectory", Directory.GetCurrentDirectory());
                 var timeoutSeconds = GetParameter<int>(arguments, "timeout", _config.DefaultTimeout);
                 var captureOutput = GetParameter<bool>(arguments, "captureOutput", true);
-                var runAsShell = GetParameter<bool>(arguments, "runAsShell", true);
+                var runAsShell = GetParameter<bool>(arguments, "runAsShell", false);
 
                 // STABILITY FIX: Add validation for timeout and working directory
                 if (timeoutSeconds <= 0 || timeoutSeconds > 3600) // Max 1 hour
@@ -156,15 +157,22 @@ namespace Saturn.Tools
                     historyEntry.Duration = result.Duration;
                     historyEntry.Success = result.ExitCode == 0;
 
-                    // STABILITY FIX: Thread-safe history management
+                    // STABILITY FIX: Thread-safe history management with ConcurrentQueue
                     if (_config.EnableHistory)
                     {
-                        lock (_historyLock)
+                        _commandHistory.Enqueue(historyEntry);
+                        Interlocked.Increment(ref _historyCount);
+
+                        // Maintain history size limit
+                        while (_historyCount > _config.MaxHistorySize)
                         {
-                            _commandHistory.Add(historyEntry);
-                            if (_commandHistory.Count > _config.MaxHistorySize)
+                            if (_commandHistory.TryDequeue(out _))
                             {
-                                _commandHistory.RemoveAt(0);
+                                Interlocked.Decrement(ref _historyCount);
+                            }
+                            else
+                            {
+                                break; // Queue is empty, exit loop
                             }
                         }
                     }
@@ -178,10 +186,8 @@ namespace Saturn.Tools
                     
                     if (_config.EnableHistory)
                     {
-                        lock (_historyLock)
-                        {
-                            _commandHistory.Add(historyEntry);
-                        }
+                        _commandHistory.Enqueue(historyEntry);
+                        Interlocked.Increment(ref _historyCount);
                     }
 
                     return CreateErrorResult("Command execution was cancelled or timed out");
@@ -193,10 +199,8 @@ namespace Saturn.Tools
                     
                     if (_config.EnableHistory)
                     {
-                        lock (_historyLock)
-                        {
-                            _commandHistory.Add(historyEntry);
-                        }
+                        _commandHistory.Enqueue(historyEntry);
+                        Interlocked.Increment(ref _historyCount);
                     }
 
                     throw;
@@ -399,18 +403,16 @@ namespace Saturn.Tools
 
         public IReadOnlyList<CommandHistory> GetCommandHistory()
         {
-            lock (_historyLock)
-            {
-                return _commandHistory.AsReadOnly();
-            }
+            return _commandHistory.ToArray();
         }
 
         public void ClearHistory()
         {
-            lock (_historyLock)
+            while (_commandHistory.TryDequeue(out _))
             {
-                _commandHistory.Clear();
+                Interlocked.Decrement(ref _historyCount);
             }
+            _historyCount = 0; // Ensure count is reset
         }
 
         protected virtual void Dispose(bool disposing)
@@ -420,10 +422,7 @@ namespace Saturn.Tools
                 if (disposing)
                 {
                     // Dispose managed resources
-                    lock (_historyLock)
-                    {
-                        _commandHistory.Clear();
-                    }
+                    ClearHistory();
                 }
                 _disposed = true;
             }
@@ -438,7 +437,7 @@ namespace Saturn.Tools
 
     public class CommandExecutorConfig
     {
-        public SecurityMode SecurityMode { get; set; } = SecurityMode.Restricted;
+        public SecurityMode SecurityMode { get; set; } = SecurityMode.Strict;
         public int DefaultTimeout { get; set; } = 30;
         public bool EnableHistory { get; set; } = true;
         public int MaxHistorySize { get; set; } = 100;
@@ -502,11 +501,7 @@ namespace Saturn.Tools
             // System info (safe)
             "whoami", "pwd", "date", "uptime", "uname", "hostname",
             
-            // Package managers (safe operations)
-            "apt", "yum", "brew", "choco", "winget",
-            
-            // Docker (if needed)
-            "docker", "docker-compose",
+            // Package managers and container tools intentionally excluded for security
             
             // Basic utilities
             "curl", "wget", "ping", "traceroute", "nslookup", "dig"
@@ -614,8 +609,44 @@ namespace Saturn.Tools
 
             var commandName = commandParts[0].ToLowerInvariant();
             
-            // Remove path separators from command name for validation
+            // Remove path separators from command name for validation and resolve absolute path
             var baseCommand = Path.GetFileName(commandName);
+
+            // SECURITY: Prevent path traversal attacks by resolving and validating the full path
+            if (commandName.Contains("..") || commandName.Contains("/") || commandName.Contains("\\"))
+            {
+                try
+                {
+                    var fullCommandPath = Path.GetFullPath(commandName);
+                    var allowedDirectories = new[]
+                    {
+                        "/usr/bin", "/bin", "/usr/local/bin", // Unix
+                        Environment.GetFolderPath(Environment.SpecialFolder.System), // Windows System32
+                        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), // Windows Program Files
+                        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86) // Windows Program Files (x86)
+                    };
+
+                    var isInAllowedDirectory = allowedDirectories.Any(dir =>
+                        !string.IsNullOrEmpty(dir) && fullCommandPath.StartsWith(dir, StringComparison.OrdinalIgnoreCase));
+
+                    if (!isInAllowedDirectory)
+                    {
+                        return new CommandValidationResult
+                        {
+                            IsValid = false,
+                            Reason = $"Command path '{fullCommandPath}' is not in an allowed directory"
+                        };
+                    }
+                }
+                catch (Exception)
+                {
+                    return new CommandValidationResult
+                    {
+                        IsValid = false,
+                        Reason = "Invalid command path"
+                    };
+                }
+            }
 
             // SECURITY: Use allowlist - only allow explicitly permitted commands
             if (!AllowedCommands.Contains(baseCommand))
@@ -625,6 +656,38 @@ namespace Saturn.Tools
                     IsValid = false,
                     Reason = $"Command '{baseCommand}' is not in the allowed commands list"
                 };
+            }
+
+            // Additional subcommand validation for certain tools (read-only only)
+            if (string.Equals(baseCommand, "git", StringComparison.OrdinalIgnoreCase))
+            {
+                var sub = commandParts.Length > 1 ? commandParts[1].ToLowerInvariant() : string.Empty;
+                var allowedGit = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "status", "log", "diff", "show", "rev-parse", "branch", "remote", "describe"
+                };
+                if (!string.IsNullOrEmpty(sub))
+                {
+                    // Disallow destructive subcommands explicitly
+                    var deniedGit = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    { "reset", "checkout", "clean", "rebase", "merge", "pull", "push", "commit", "apply", "cherry-pick" };
+                    if (deniedGit.Contains(sub))
+                    {
+                        return new CommandValidationResult
+                        {
+                            IsValid = false,
+                            Reason = $"git subcommand '{sub}' is not permitted"
+                        };
+                    }
+                    if (!allowedGit.Contains(sub))
+                    {
+                        return new CommandValidationResult
+                        {
+                            IsValid = false,
+                            Reason = $"git subcommand '{sub}' is not in the allowed read-only list"
+                        };
+                    }
+                }
             }
 
             // Check for dangerous argument patterns

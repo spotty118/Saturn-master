@@ -48,7 +48,10 @@ namespace Saturn.Web
                 else
                 {
                     var response = await _agent.Execute<OpenRouter.Models.Api.Chat.Message>(message);
-                    var responseText = response.Content.ToString();
+                    var responseText = response?.Content.ValueKind != System.Text.Json.JsonValueKind.Null &&
+                                       response?.Content.ValueKind != System.Text.Json.JsonValueKind.Undefined
+                        ? response.Content.ToString()
+                        : "No response received";
                     await Clients.All.SendAsync("AssistantMessage", responseText);
                 }
 
@@ -130,7 +133,7 @@ namespace Saturn.Web
 
                 var config = new
                 {
-                    ApiKey = string.IsNullOrEmpty(settings.OpenRouterApiKey) ? null : "***" + settings.OpenRouterApiKey.Substring(Math.Max(0, settings.OpenRouterApiKey.Length - 4)),
+                    HasApiKey = !string.IsNullOrEmpty(settings.OpenRouterApiKey),
                     Model = settings.DefaultModel ?? _agent.Configuration.Model,
                     Temperature = settings.Temperature ?? _agent.Configuration.Temperature,
                     MaxTokens = settings.MaxTokens ?? _agent.Configuration.MaxTokens,
@@ -160,6 +163,16 @@ namespace Saturn.Web
                 if (updateRequest.TryGetValue("apiKey", out var apiKeyObj) && apiKeyObj?.ToString() is string apiKey && !string.IsNullOrWhiteSpace(apiKey))
                 {
                     await _settingsManager.SetApiKeyAsync(apiKey);
+                    // Hot-apply to the current OpenRouter client if available
+                    try
+                    {
+                        var client = _agent.Configuration?.Client;
+                        if (client?.Options != null)
+                        {
+                            client.Options.ApiKey = apiKey;
+                        }
+                    }
+                    catch { /* best-effort hot-apply */ }
                     configChanged = true;
                 }
 

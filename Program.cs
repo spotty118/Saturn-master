@@ -7,6 +7,7 @@ using Saturn.Agents.Core;
 using Saturn.Agents.MultiAgent;
 using Saturn.Configuration;
 using Saturn.Core;
+using Saturn.Core.Constants;
 using Saturn.Core.Extensions;
 using Saturn.Core.Configuration;
 using Saturn.Core.Logging;
@@ -17,8 +18,6 @@ using Saturn.Web;
 using Saturn.OpenRouter;
 using System.Text;
 using Microsoft.AspNetCore.DataProtection;
-using Azure.Security.KeyVault.Secrets;
-using Azure.Identity;
 
 namespace Saturn
 {
@@ -38,11 +37,13 @@ namespace Saturn
                 var configService = host.Services.GetRequiredService<IConfigurationService>();
                 var logger = host.Services.GetRequiredService<IOperationLogger>();
                 var validationService = host.Services.GetRequiredService<IValidationService>();
+                var settingsManager = host.Services.GetRequiredService<SettingsManager>();
+                var morphConfigManager = host.Services.GetRequiredService<Saturn.Configuration.MorphConfigurationManager>();
 
                 using var startupScope = logger.BeginOperation("ApplicationStartup");
 
                 // Load and validate configuration
-                await InitializeConfigurationAsync(configService, validationService, logger);
+                await InitializeConfigurationAsync(configService, validationService, logger, settingsManager, morphConfigManager);
 
                 // Parse command line arguments
                 var commandLineOptions = ParseCommandLineArguments(args);
@@ -104,7 +105,9 @@ namespace Saturn
         private static async Task InitializeConfigurationAsync(
             IConfigurationService configService,
             IValidationService validationService,
-            IOperationLogger logger)
+            IOperationLogger logger,
+            SettingsManager settingsManager,
+            Saturn.Configuration.MorphConfigurationManager morphConfigManager)
         {
             using var configScope = logger.BeginOperation("ConfigurationInitialization");
 
@@ -124,17 +127,17 @@ namespace Saturn
                 }
             }
 
-            // Check for OpenRouter API key
-            var openRouterCfg = await configService.GetSectionAsync<OpenRouterConfiguration>();
-            if (string.IsNullOrEmpty(openRouterCfg.ApiKey))
+            // Check for OpenRouter API key via SettingsManager (fallback to env later in client factory)
+            var storedApiKey = settingsManager.GetOpenRouterApiKey();
+            if (string.IsNullOrWhiteSpace(storedApiKey))
             {
-                await PromptForOpenRouterApiKey(configService, logger);
-                openRouterCfg = await configService.GetSectionAsync<OpenRouterConfiguration>();
+                await PromptForOpenRouterApiKey(settingsManager, logger);
+                storedApiKey = settingsManager.GetOpenRouterApiKey();
             }
-            else
+            if (!string.IsNullOrWhiteSpace(storedApiKey))
             {
                 logger.LogOperationStart("ValidateOpenRouterApiKey");
-                var apiKeyValidation = validationService.ValidateApiKey(openRouterCfg.ApiKey, "openrouter");
+                var apiKeyValidation = validationService.ValidateApiKey(storedApiKey!, "openrouter");
                 if (!apiKeyValidation.IsValid)
                 {
                     Console.WriteLine("Warning: OpenRouter API key validation failed:");
@@ -145,13 +148,14 @@ namespace Saturn
                 }
             }
 
-            // Check for Morph API key setup
-            var morphCfg = await configService.GetSectionAsync<MorphConfiguration>();
-            if (string.IsNullOrEmpty(morphCfg.ApiKey))
+            // Check for Morph API key setup using MorphConfigurationManager
+            var morphKey = await morphConfigManager.GetApiKeyAsync();
+            if (string.IsNullOrWhiteSpace(morphKey))
             {
-                await PromptForMorphApiKey(configService, logger);
+                await PromptForMorphApiKey(morphConfigManager, logger);
+                morphKey = await morphConfigManager.GetApiKeyAsync();
             }
-            else
+            if (!string.IsNullOrWhiteSpace(morphKey))
             {
                 Console.WriteLine($"Morph Fast Apply enabled - expect 83% faster diff operations!");
                 logger.LogConfigurationChange("MorphEnabled", false, true);
@@ -160,7 +164,7 @@ namespace Saturn
             configScope.Complete(new { ConfigurationValid = configValidation.IsValid });
         }
 
-        private static async Task PromptForOpenRouterApiKey(IConfigurationService configService, IOperationLogger logger)
+        private static async Task PromptForOpenRouterApiKey(SettingsManager settingsManager, IOperationLogger logger)
         {
             using var promptScope = logger.BeginOperation("PromptOpenRouterApiKey");
 
@@ -184,8 +188,8 @@ namespace Saturn
                         return;
                     }
                     
-                    // INTEGRATION: Use secure storage via configuration service
-                    await configService.UpdateSectionAsync(new OpenRouterConfiguration { ApiKey = trimmedApiKey });
+                    // Store securely via SettingsManager
+                    await settingsManager.SetOpenRouterApiKeyAsync(trimmedApiKey);
 
                     Console.WriteLine("API key saved and encrypted successfully!");
                     logger.LogConfigurationChange("OpenRouterApiKey", "Not Set", "Set (Encrypted)");
@@ -254,14 +258,14 @@ namespace Saturn
         private static bool IsValidApiKeyFormat(string apiKey)
         {
             // Basic validation for OpenRouter API key format
-            return !string.IsNullOrWhiteSpace(apiKey) && 
-                   apiKey.Length >= 20 && 
+            return !string.IsNullOrWhiteSpace(apiKey) &&
+                   apiKey.Length >= ApplicationConstants.Security.MinApiKeyLength &&
                    !apiKey.Contains(" ") &&
                    !apiKey.Contains("\n") &&
                    !apiKey.Contains("\r");
         }
 
-        private static async Task PromptForMorphApiKey(IConfigurationService configService, IOperationLogger logger)
+        private static async Task PromptForMorphApiKey(Saturn.Configuration.MorphConfigurationManager morphConfigManager, IOperationLogger logger)
         {
             using var promptScope = logger.BeginOperation("PromptMorphApiKey");
 
@@ -282,8 +286,8 @@ namespace Saturn
                     return;
                 }
                 
-                // SECURITY FIX: Don't set environment variable directly
-                await configService.UpdateSectionAsync(new MorphConfiguration { ApiKey = trimmedKey });
+                // Persist using MorphConfigurationManager
+                await morphConfigManager.SetApiKeyAsync(trimmedKey);
 
                 Console.WriteLine("Morph API key saved! You'll get 83% faster diff operations.");
                 logger.LogConfigurationChange("MorphApiKey", "Not Set", "Set");
@@ -307,22 +311,22 @@ namespace Saturn
                 useWebUI = true;
             }
 
-            // SECURITY FIX: Use configuration for default port instead of hardcoded
-            const int DEFAULT_PORT = 5173;
-            int port = DEFAULT_PORT;
+            // Use configuration constants for port validation
+            int port = ApplicationConstants.Network.DefaultWebPort;
             var portIndex = Array.IndexOf(args, "--port");
             if (portIndex >= 0 && portIndex + 1 < args.Length)
             {
                 if (int.TryParse(args[portIndex + 1], out int customPort))
                 {
                     // Validate port range for security
-                    if (customPort >= 1024 && customPort <= 65535)
+                    if (customPort >= ApplicationConstants.Network.MinValidPort &&
+                        customPort <= ApplicationConstants.Network.MaxValidPort)
                     {
                         port = customPort;
                     }
                     else
                     {
-                        Console.WriteLine($"Invalid port {customPort}. Using default port {DEFAULT_PORT}");
+                        Console.WriteLine($"Invalid port {customPort}. Using default port {ApplicationConstants.Network.DefaultWebPort}");
                     }
                 }
             }
@@ -339,6 +343,21 @@ namespace Saturn
         {
             using var webScope = logger.BeginOperation("StartWebUI");
             
+            // Prefer configured port if CLI didn't override (default 5173)
+            try
+            {
+                var cfgSvc = host.Services.GetService<IConfigurationService>();
+                if (cfgSvc != null)
+                {
+                    var cfg = await cfgSvc.GetConfigurationAsync();
+                    if (options.Port == 5173 && cfg?.Web?.Port is int cfgPort && cfgPort >= 1024 && cfgPort <= 65535)
+                    {
+                        options.Port = cfgPort;
+                    }
+                }
+            }
+            catch { /* non-fatal */ }
+
             Console.WriteLine($"Starting Saturn Web UI on http://localhost:{options.Port}");
             Console.WriteLine("Press Ctrl+C to stop the server.");
             
@@ -409,8 +428,23 @@ namespace Saturn
                     else
                     {
                         var response = await agent.Execute<OpenRouter.Models.Api.Chat.Message>(input);
-                        // SECURITY FIX: Add null check before calling ToString()
-                        var content = response?.Content?.ToString() ?? "No response received";
+
+                        // Improved null checking and content extraction
+                        string content;
+                        if (response?.Content.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            content = response.Content.GetString() ?? "Empty response";
+                        }
+                        else if (response?.Content.ValueKind == System.Text.Json.JsonValueKind.Object ||
+                                response?.Content.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            content = response.Content.GetRawText() ?? "Invalid response format";
+                        }
+                        else
+                        {
+                            content = "No response received";
+                        }
+
                         Console.WriteLine(content);
                     }
                     
